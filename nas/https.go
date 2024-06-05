@@ -164,11 +164,14 @@ func startHTTPSProxy(config common.Config) {
 		}
 
 		rsaDataDS, err := os.ReadFile(config.KeyPathDS)
+		//fmt.Println(rsaDataDS) //pp
 		if err != nil {
 			panic(err)
 		}
 
 		rsaBlockDS, _ := pem.Decode(rsaDataDS)
+		//fmt.Println(rsaBlockDS) //pp
+		//parsedKeyDS, err := x509.ParsePKCS8PrivateKey(rsaBlockDS.Bytes)
 		parsedKeyDS, err := x509.ParsePKCS8PrivateKey(rsaBlockDS.Bytes)
 		if err != nil {
 			panic(err)

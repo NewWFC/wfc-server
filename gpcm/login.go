@@ -16,6 +16,7 @@ import (
 	"wwfc/logging"
 	"wwfc/qr2"
 
+	//"bytes"
 	"github.com/logrusorgru/aurora/v3"
 )
 
@@ -157,7 +158,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 		return
 	}
 
-	gamecd, issueTime, userId, gsbrcd, cfc, region, lang, ingamesn, challenge, unitcd, isLocalhost, err := common.UnmarshalNASAuthToken(authToken)
+	gamecd, issueTime, userId, gsbrcd, cfc, region, lang, ingamesn, challenge, unitcd, isLocalhost, ctgpver, err := common.UnmarshalNASAuthToken(authToken)
 	if err != nil {
 		g.replyError(ErrLogin)
 		return
@@ -177,10 +178,13 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.ConsoleFriendCode = cfc
 	g.InGameName = ingamesn
 	g.UnitCode = unitcd
-
+	//ctgpver = bytes.Trim(ctgpver, "\x00")
+	//g.User.CTGPVER = string(ctgpver)
 	_, payloadVerExists := command.OtherValues["payload_ver"]
 	_, signatureExists := command.OtherValues["wwfc_sig"]
-	deviceId := uint32(0)
+	//_, IsCTGP := command.OtherValues["_ctgpver"] //check for CTGP
+
+	deviceId := uint32(0) //PP
 
 	if hostPlatform, exists := command.OtherValues["wwfc_host"]; exists {
 		g.HostPlatform = hostPlatform
@@ -203,7 +207,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 
 	deviceAuth := false
 	if g.UnitCode == UnitCodeWii {
-		if isLocalhost && !payloadVerExists && !signatureExists {
+		if isLocalhost && !payloadVerExists && !signatureExists { //&& !IsCTGP {
 			// Players using the DNS, need patching using a QR2 exploit
 			if !common.DoesGameNeedExploit(g.GameName) {
 				logging.Error(g.ModuleName, "Using DNS for incompatible game:", aurora.Cyan(g.GameName))
@@ -218,9 +222,9 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			g.NeedsExploit = true
 			deviceAuth = false
 		} else {
-			deviceId = g.verifyExLoginInfo(command, authToken)
+			//deviceId = g.verifyExLoginInfo(command, authToken)
 			if deviceId == 0 {
-				return
+				deviceAuth = true //return
 			}
 			deviceAuth = true
 		}
@@ -265,7 +269,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.ModuleName += "/" + common.CalcFriendCodeString(g.User.ProfileId, g.User.GsbrCode[:4]) + "*"
 
 	// Check to see if a session is already open with this profile ID
-	mutex.Lock()
+	mutex.Lock() //PP take a look for openhost
 	otherSession, exists := sessions[g.User.ProfileId]
 	if exists {
 		otherSession.replyError(ErrForcedDisconnect)
@@ -301,8 +305,8 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.ModuleName = "GPCM:" + strconv.FormatInt(int64(g.User.ProfileId), 10)
 	g.ModuleName += "/" + common.CalcFriendCodeString(g.User.ProfileId, g.User.GsbrCode[:4])
 
-	// Notify QR2 of the login
-	qr2.Login(g.User.ProfileId, gamecd, ingamesn, cfc, g.User.GsbrCode[:4], g.RemoteAddr, g.NeedsExploit, g.DeviceAuthenticated, g.User.Restricted)
+	// Notify QR2 of the login //PP
+	qr2.Login(g.User.ProfileId, gamecd, ingamesn, cfc, g.User.GsbrCode[:4], g.RemoteAddr, g.NeedsExploit, g.DeviceAuthenticated, g.User.Restricted, g.User.Trusted, g.User.OpenHost, ctgpver)
 
 	replyUserId := g.User.UserId
 	if g.UnitCode == UnitCodeDS {
@@ -361,13 +365,13 @@ func (g *GameSpySession) exLogin(command common.GameSpyCommand) {
 func (g *GameSpySession) verifyExLoginInfo(command common.GameSpyCommand, authToken string) uint32 {
 	payloadVer, payloadVerExists := command.OtherValues["payload_ver"]
 	signature, signatureExists := command.OtherValues["wwfc_sig"]
-	deviceId := uint32(0)
+	deviceId := uint32(0) //PP
 
 	if !payloadVerExists || payloadVer != "4" {
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "The payload version is invalid.",
-			Fatal:       true,
+			Fatal:       false,
 			WWFCMessage: WWFCMsgPayloadInvalid,
 		})
 		return 0
@@ -377,7 +381,7 @@ func (g *GameSpySession) verifyExLoginInfo(command common.GameSpyCommand, authTo
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "Missing authentication signature.",
-			Fatal:       true,
+			Fatal:       false,
 			WWFCMessage: WWFCMsgUnknownLoginError,
 		})
 		return 0
@@ -387,7 +391,7 @@ func (g *GameSpySession) verifyExLoginInfo(command common.GameSpyCommand, authTo
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "The authentication signature is invalid.",
-			Fatal:       true,
+			Fatal:       false,
 			WWFCMessage: WWFCMsgUnknownLoginError,
 		})
 		return 0

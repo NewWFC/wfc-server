@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ctx       = context.Background()
-	pool      *pgxpool.Pool
-	apiSecret string
+	ctx        = context.Background()
+	pool       *pgxpool.Pool
+	apiSecret  string
+	apiTrusted string
 )
 
 func StartServer(reload bool) {
@@ -19,6 +20,7 @@ func StartServer(reload bool) {
 	config := common.GetConfig()
 
 	apiSecret = config.APISecret
+	apiTrusted = config.TrustedKey
 
 	// Start SQL
 	dbString := fmt.Sprintf("postgres://%s:%s@%s/%s", config.Username, config.Password, config.DatabaseAddress, config.DatabaseName)

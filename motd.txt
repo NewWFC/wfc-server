@@ -1,2 +1,6 @@
 Welcome to
-WiiLink Wi-Fi Connection!
+NewWFC
+
+
+Enable OpenHost in frooms with
+Start/+

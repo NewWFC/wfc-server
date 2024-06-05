@@ -125,6 +125,16 @@ func LoginUserToGPCM(pool *pgxpool.Pool, ctx context.Context, userId uint64, gsb
 		user.RestrictedDeviceId = bannedDeviceId
 	}
 
+	var Trusted bool
+	err = pool.QueryRow(ctx, DoesUserExistTrusted, user.ProfileId).Scan(&Trusted)
+	if err != nil {
+		return User{}, err // Handle error
+	}
+
+	user.Trusted = Trusted
+	//if ()
+
+	//}
 	return user, nil
 }
 

@@ -103,7 +103,22 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 
 		case "login":
 			isLocalhost := strings.HasPrefix(r.RemoteAddr, "127.0.0.1:") || strings.HasPrefix(r.RemoteAddr, "[::1]:")
-			reply = login(moduleName, fields, isLocalhost)
+			ctgpver := string("")
+
+			//if _, exists := fields["_ctgpver"]; exists {
+			//	// Field "_ctgpver" exists in the map
+			//	isLocalhost = false
+			//}
+			if _, exists := fields["_payload_ver"]; exists {
+				// Field "_ctgpver" exists in the map
+				isLocalhost = false
+			}
+			if _, exists := fields["_ctgpver"]; exists {
+				// Field "_ctgpver" exists in the map
+				ctgpver = fields["_ctgpver"]
+				fmt.Println("CTGP FOUND: ", ctgpver) //PP CTGP PP
+			}
+			reply = login(moduleName, fields, isLocalhost, ctgpver)
 			break
 
 		case "svcloc":
@@ -185,7 +200,7 @@ func acctcreate() map[string]string {
 	}
 }
 
-func login(moduleName string, fields map[string]string, isLocalhost bool) map[string]string {
+func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpver string) map[string]string {
 	param := map[string]string{
 		"retry":    "0",
 		"datetime": getDateTime(),
@@ -285,10 +300,10 @@ func login(moduleName string, fields map[string]string, isLocalhost bool) map[st
 		// Only later DS games send this
 		ingamesn, ok := fields["ingamesn"]
 		if ok {
-			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], ingamesn, 0, isLocalhost)
+			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], ingamesn, 0, isLocalhost, ctgpver)
 			logging.Notice(moduleName, "Login (DS)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "devname:", aurora.Cyan(devname), "ingamesn:", aurora.Cyan(ingamesn))
 		} else {
-			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], "", 0, isLocalhost)
+			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], "", 0, isLocalhost, ctgpver)
 			logging.Notice(moduleName, "Login (DS)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "devname:", aurora.Cyan(devname))
 		}
 
@@ -320,7 +335,7 @@ func login(moduleName string, fields map[string]string, isLocalhost bool) map[st
 			return param
 		}
 
-		authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, cfcInt, regionByte[0], langByte[0], fields["ingamesn"], 1, isLocalhost)
+		authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, cfcInt, regionByte[0], langByte[0], fields["ingamesn"], 1, isLocalhost, ctgpver)
 		logging.Notice(moduleName, "Login (Wii)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "ingamesn:", aurora.Cyan(fields["ingamesn"]))
 	}
 
@@ -331,6 +346,7 @@ func login(moduleName string, fields map[string]string, isLocalhost bool) map[st
 	}
 	param["challenge"] = challenge
 	param["token"] = authToken
+	param["ctgpver"] = ctgpver //PP Probably this ctgp ver
 
 	return param
 }

@@ -43,6 +43,7 @@ type Config struct {
 	AllowDefaultDolphinKeys bool `xml:"allowDefaultDolphinKeys"`
 
 	ServerName string `xml:"serverName,omitempty"`
+	TrustedKey string `xml:"TrustedKey,omitempty"`
 }
 
 func GetConfig() Config {
@@ -53,7 +54,8 @@ func GetConfig() Config {
 
 	var config Config
 	config.AllowDefaultDolphinKeys = true
-	config.ServerName = "WiiLink"
+	//config.ServerName = config.CertPath
+	//config.ServerName = "WiiLink" //PP
 
 	err = xml.Unmarshal(data, &config)
 	if err != nil {

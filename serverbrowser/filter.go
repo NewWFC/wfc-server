@@ -1,8 +1,14 @@
 package serverbrowser
 
 import (
+	"strconv"
 	"wwfc/logging"
+
+	//"wwfc/qr2"
 	"wwfc/serverbrowser/filter"
+
+	"strings"
+	"wwfc/gpcm"
 
 	"github.com/logrusorgru/aurora/v3"
 )
@@ -42,6 +48,32 @@ func filterServers(moduleName string, servers []map[string]string, queryGame str
 		if err != nil {
 			logging.Error(moduleName, "Error evaluating filter:", err.Error())
 			return []map[string]string{}
+		}
+		if server["gamename"] == "mariokartwii" {
+			if strings.HasPrefix(server["rk"], "vp") || strings.HasPrefix(server["rk"], "bp") {
+				if server["+trusted"] == "false" {
+					ret = 0
+					// Check if the value exists
+					dwcPidStr, ok := server["dwc_pid"]
+
+					if !ok {
+						// Handle the case when dwc_pid key does not exist
+						continue
+					}
+
+					// Convert string to int
+					dwcPidInt, err := strconv.Atoi(dwcPidStr)
+					if err != nil {
+						// Handle the case when dwc_pid cannot be converted to int
+						continue
+					}
+
+					// Convert int to int32
+					dwcPid := int32(dwcPidInt)
+					gpcm.KickPlayer(uint32(dwcPid), "restricted_join")
+
+				}
+			}
 		}
 
 		if ret != 0 {
