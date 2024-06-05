@@ -2,6 +2,7 @@ package qr2
 
 import (
 	"encoding/gob"
+	"fmt"
 	"math/rand"
 	"net"
 	"os"
@@ -238,6 +239,35 @@ func (session *Session) setProfileID(moduleName string, newPID string, gpcmIP st
 	session.Data["+fcgameid"] = loginInfo.FriendKeyGame
 
 	session.Data["dwc_pid"] = newPID
+
+	//trusted PP stuff
+	trustedStr := strconv.FormatBool(loginInfo.Trusted)
+	session.Data["+trusted"] = trustedStr
+	ctgpvercheck := loginInfo.CTGPVER
+	if ctgpvercheck != "NOTPEDO" && ctgpvercheck != "" {
+		if ctgpvercheck != "1031044" {
+			ctgpstr := loginInfo.CTGPVER
+			ctgp, err := common.Base64DwcEncoding.DecodeString(ctgpstr)
+
+			if err != nil {
+				// Handle the error
+				fmt.Println("Error decoding:", err)
+			} else {
+				ctgpstr = string(ctgp)
+				session.Data["+ctgpver"] = string(ctgpstr)
+			}
+
+		} else {
+			session.Data["+ctgpver"] = string(loginInfo.CTGPVER)
+		}
+	}
+
+	//openhost PP stuff
+	OHStr := strconv.FormatBool(loginInfo.OpenHoster)
+	session.Data["+OH"] = OHStr
+
+	session.Data["+name"] = loginInfo.InGameName //PP in game name
+
 	logging.Notice(moduleName, "Opened session with PID", aurora.Cyan(newPID))
 
 	return true
@@ -249,7 +279,7 @@ func makeLookupAddr(addr string) uint64 {
 }
 
 // Get a copy of the list of servers
-func GetSessionServers() []map[string]string {
+func GetSessionServers() []map[string]string { //PP look into how to add ingamesn
 	var servers []map[string]string
 	var unreachable []uint64
 	currentTime := time.Now().Unix()

@@ -33,6 +33,7 @@ const (
 	NNReportReply         = 0x0E
 	NNPreInitRequest      = 0x0F
 	NNPreInitReply        = 0x10
+	NNInitRequestWimm     = 0x80
 
 	// Port type
 	PortTypeGamePort = 0x00
@@ -237,6 +238,10 @@ func handleConnection(conn net.PacketConn, addr net.Addr, buffer []byte) {
 		logging.Error(moduleName, "Received unknown command type:", aurora.Cyan(command))
 
 	case NNInitRequest:
+		// logging.Info(moduleName, "Command:", aurora.Yellow("NN_INIT"))
+		session.handleInit(conn, addr, buffer[12:], moduleName, version)
+
+	case NNInitRequestWimm:
 		// logging.Info(moduleName, "Command:", aurora.Yellow("NN_INIT"))
 		session.handleInit(conn, addr, buffer[12:], moduleName, version)
 

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"wwfc/gpcm"
 )
 
 type expression struct {
@@ -143,11 +144,39 @@ func (this *expression) evalEquals(args []*TreeNode) int64 {
 	}
 }
 
-// Operator override
+// Operator override //PP look here
 func (this *expression) evalEqualsRK(value string) int64 {
 	rk := this.context["rk"]
 	// Check and remove regional searches due to the limited player count
 	// China (ID 6) gets a pass because it was never released
+	//PP
+	//gpcm.KickPlayer(uint32(pid), "moderator_kick")
+	//return ""
+	if val, kick := this.context["+trusted"]; kick && val == "false" {
+		if kick == true && (strings.HasPrefix(rk, "vp") || strings.HasPrefix(rk, "bp")) {
+			// Check if the value exists
+			dwcPidStr, ok := this.context["dwc_pid"]
+			if !ok {
+				// Handle the case when dwc_pid key does not exist
+				return 0
+			}
+
+			// Convert string to int
+			dwcPidInt, err := strconv.Atoi(dwcPidStr)
+			if err != nil {
+				// Handle the case when dwc_pid cannot be converted to int
+				return 0
+			}
+
+			// Convert int to int32
+			dwcPid := int32(dwcPidInt)
+
+			gpcm.KickPlayer(uint32(dwcPid), "restricted_join") //pp
+			return 0
+		}
+	}
+	//check value
+
 	if len(rk) == 4 && (strings.HasPrefix(rk, "vs_") || strings.HasPrefix(rk, "bt_")) && rk[3] >= '0' && rk[3] < '6' {
 		rk = rk[:2]
 	}

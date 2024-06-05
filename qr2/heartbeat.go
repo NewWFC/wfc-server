@@ -142,17 +142,17 @@ func checkValidRating(moduleName string, payload map[string]string) string {
 		// ev and eb values must be in range 1 to 9999
 		if ev := payload["ev"]; ev != "" {
 			evInt, err := strconv.ParseInt(ev, 10, 16)
-			if err != nil || evInt < 1 || evInt > 9999 {
+			if err != nil || evInt < 1 || evInt > 65535 {
 				logging.Error(moduleName, "Invalid ev value:", aurora.Cyan(ev))
-				return "invalid_elo"
+				//return "invalid_elo"
 			}
 		}
 
 		if eb := payload["eb"]; eb != "" {
 			ebInt, err := strconv.ParseInt(eb, 10, 16)
-			if err != nil || ebInt < 1 || ebInt > 9999 {
+			if err != nil || ebInt < 1 || ebInt > 65535 {
 				logging.Error(moduleName, "Invalid eb value:", aurora.Cyan(eb))
-				return "invalid_elo"
+				//return "invalid_elo"
 			}
 		}
 	}

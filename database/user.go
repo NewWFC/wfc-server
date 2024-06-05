@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -27,6 +28,12 @@ const (
 
 	GetMKWFriendInfoQuery    = `SELECT mariokartwii_friend_info FROM users WHERE profile_id = $1`
 	UpdateMKWFriendInfoQuery = `UPDATE users SET mariokartwii_friend_info = $2 WHERE profile_id = $1`
+
+	DoesUserExistTrusted = `SELECT EXISTS(SELECT 1 FROM trusted WHERE profile_id = $1)`
+	FetchTrustedList     = `SELECT profile_id FROM trusted`
+	//GetUserTrusted = `SELECT  FROM trusted WHERE profile_id = $1` //PP db
+	AddUserTrusted    = `INSERT INTO trusted (profile_id) VALUES ($1)`
+	RemoveUserTrusted = `DELETE FROM trusted WHERE profile_id = $1`
 )
 
 type User struct {
@@ -41,6 +48,8 @@ type User struct {
 	Restricted         bool
 	RestrictedDeviceId uint32
 	OpenHost           bool
+	Trusted            bool
+	CTGPVER            string
 }
 
 var (
@@ -149,6 +158,53 @@ func GetProfile(pool *pgxpool.Pool, ctx context.Context, profileId uint32) (User
 
 func BanUser(pool *pgxpool.Pool, ctx context.Context, profileId uint32, tos bool, length time.Duration, reason string, reasonHidden string, moderator string) bool {
 	_, err := pool.Exec(ctx, UpdateUserBan, profileId, time.Now(), time.Now().Add(length), reason, reasonHidden, moderator, tos)
+	return err == nil
+}
+func DoesUserTrusted(pool *pgxpool.Pool, ctx context.Context, profileID uint32) (bool, error) {
+	var trusted bool
+	err := pool.QueryRow(ctx, DoesUserExistTrusted, profileID).Scan(&trusted)
+	if err != nil {
+		return false, err // Return false and the error
+	}
+	return trusted, nil // Return the trusted value and no error
+}
+
+func AddTrusted(pool *pgxpool.Pool, ctx context.Context, profileID uint32) (bool, error) {
+	_, err := pool.Exec(ctx, AddUserTrusted, profileID)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func FetchTrusted(pool *pgxpool.Pool, ctx context.Context) ([]uint32, error) {
+	var trustedIDs []uint32
+
+	rows, err := pool.Query(ctx, FetchTrustedList)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var profileID uint32
+		if err := rows.Scan(&profileID); err != nil {
+			// Log or print the error for debugging
+			fmt.Println("Error scanning row:", err)
+			return nil, err
+		}
+		trustedIDs = append(trustedIDs, profileID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return trustedIDs, nil
+}
+
+func RemoveTrusted(pool *pgxpool.Pool, ctx context.Context, profileId uint32) bool {
+	_, err := pool.Exec(ctx, RemoveUserTrusted, profileId)
 	return err == nil
 }
 

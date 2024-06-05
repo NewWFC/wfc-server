@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+	"wwfc/common"
 	"wwfc/database"
 	"wwfc/gpcm"
 )
@@ -123,4 +124,124 @@ func handleBanImpl(w http.ResponseWriter, r *http.Request) string {
 	}
 
 	return ""
+}
+
+func HandleFetch(w http.ResponseWriter, r *http.Request) {
+	result := handleAddRemoveTrusted(w, r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	jsonResponse, err := json.Marshal(result)
+	if err != nil {
+		http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
+		return
+	}
+
+	// Set Content-Length header
+	w.Header().Set("Content-Length", strconv.Itoa(len(jsonResponse)))
+
+	w.Write(jsonResponse)
+}
+
+func handleAddRemoveTrusted(w http.ResponseWriter, r *http.Request) interface{} {
+	// TODO: Actual authentication rather than a fixed secret
+	// TODO: Use POST instead of GET
+	var trusted bool
+	var pid32 uint32
+	u, err := url.Parse(r.URL.String())
+	if err != nil {
+		return map[string]string{"error": "Bad request"}
+	}
+
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return map[string]string{"error": "Bad request"}
+	}
+
+	if query.Get("key") != apiSecret {
+		if query.Get("key") != apiTrusted {
+			return map[string]string{"error": "Invalid API secret"}
+		}
+	}
+	if apiSecret == "" || apiTrusted == "" {
+		return map[string]string{"error": "Woops, haven't set up config"}
+
+	}
+
+	request := query.Get("type")
+	if "type" == "" {
+		return map[string]string{"error": "Missing Add or Remove or FETCH"}
+	}
+	if request != "FETCH" {
+		pidStr := query.Get("pid")
+		if pidStr == "" {
+			return map[string]string{"error": "Missing pid in request"}
+		}
+
+		pid, err := strconv.ParseUint(pidStr, 10, 32)
+		if err != nil {
+			return map[string]string{"error": "Invalid pid"}
+		}
+
+		pid32 = uint32(pid)
+
+		trusted, err = database.DoesUserTrusted(pool, ctx, pid32)
+		if err != nil {
+			return "An error occured"
+		}
+
+	}
+
+	switch request {
+	case "FETCH":
+		trustedIDs, err := database.FetchTrusted(pool, ctx)
+		if err != nil {
+			return map[string]string{"error": "Error fetching trusted IDs"}
+		}
+
+		// Create a map to store friend codes
+		friendCodes := make(map[uint32]string)
+
+		// Iterate through trustedIDs and calculate friend codes
+		for _, pid := range trustedIDs {
+			fc := common.CalcFriendCodeString(pid, "RMCJ") // Assuming "RMCJ" is the gameId
+			friendCodes[pid] = fc
+		}
+
+		// Convert the map to JSON
+		friendCodesJSON, err := json.Marshal(friendCodes)
+		if err != nil {
+			return map[string]string{"error": "Error converting friend codes to JSON"}
+		}
+
+		return string(friendCodesJSON)
+	case "Add":
+		if !trusted {
+			_, err = database.AddTrusted(pool, ctx, pid32)
+			if err != nil {
+				return map[string]string{"error": "couldn't add user"}
+			}
+			return map[string]string{"success": "User Added"}
+		}
+		if trusted {
+			return map[string]string{"error": "Error, user is already whitelisted"}
+		}
+
+		return map[string]string{"error": "Error while checking boolean (add)"}
+
+	case "Remove":
+		if trusted {
+			database.RemoveTrusted(pool, ctx, pid32)
+			return map[string]string{"success": "User Removed"}
+		}
+
+		if !trusted {
+			return map[string]string{"error": "User isn't whitelisted, cannot remove"}
+		}
+		return map[string]string{"error": "Error while checking boolean (remove)"}
+
+	default:
+		return map[string]string{"error": "missing Add or Remove or FETCH"}
+	}
 }
