@@ -47,7 +47,7 @@
 
     <!-- Database information -->
     <databaseAddress>127.0.0.1</databaseAddress>
-    <databaseName>wwfc</databaseName>
+    <databaseName>newwfc</databaseName>
     
     <!-- Logging configuration -->
     <!-- Log verbosity
