@@ -1,5 +1,6 @@
 # NewWFC
 NewWFC aims to be an open source server replacement for Nintendo Wi-Fi Connection. Currently, a work in progress
+(based on the WiiLinkWFC source)
 
 ## Current Support
 - Matchmaking (No server sorting yet)
