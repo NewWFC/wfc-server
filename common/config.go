@@ -3,6 +3,8 @@ package common
 import (
 	"encoding/xml"
 	"os"
+
+	"github.com/linkdata/deadlock"
 )
 
 type Config struct {
@@ -11,12 +13,13 @@ type Config struct {
 	DatabaseAddress string `xml:"databaseAddress"`
 	DatabaseName    string `xml:"databaseName"`
 
-	DefaultAddress  string  `xml:"address"`
-	GameSpyAddress  *string `xml:"gsAddress,omitempty"`
-	NASAddress      *string `xml:"nasAddress,omitempty"`
-	NASPort         string  `xml:"nasPort"`
-	NASAddressHTTPS *string `xml:"nasAddressHttps,omitempty"`
-	NASPortHTTPS    string  `xml:"nasPortHttps"`
+	DefaultAddress       string  `xml:"address"`
+	GameSpyAddress       *string `xml:"gsAddress,omitempty"`
+	NASAddress           *string `xml:"nasAddress,omitempty"`
+	NASPort              string  `xml:"nasPort"`
+	NASAddressHTTPS      *string `xml:"nasAddressHttps,omitempty"`
+	NASPortHTTPS         string  `xml:"nasPortHttps"`
+	PayloadServerAddress string  `xml:"payloadServerAddress"`
 
 	FrontendAddress        string `xml:"frontendAddress"`
 	FrontendBackendAddress string `xml:"frontendBackendAddress"`
@@ -40,22 +43,43 @@ type Config struct {
 
 	APISecret string `xml:"apiSecret"`
 
-	AllowDefaultDolphinKeys bool `xml:"allowDefaultDolphinKeys"`
+	AllowDefaultDolphinKeys     bool   `xml:"allowDefaultDolphinKeys"`
+	AllowMultipleDeviceIDs      string `xml:"allowMultipleDeviceIDs"`
+	AllowConnectWithoutDeviceID bool   `xml:"allowConnectWithoutDeviceID"`
 
 	ServerName string `xml:"serverName,omitempty"`
 	TrustedKey string `xml:"TrustedKey,omitempty"`
+	DeluxeKey  string `xml:"DeluxeKey,omitempty"`
+
+	DiscordWebhookURL string `xml:"discordWebhookURL,omitempty"`
+	TelegramBotToken  string `xml:"telegramBotToken,omitempty"`
+	TelegramChatID    string `xml:"telegramChatID,omitempty"`
+	IpinfoToken       string `xml:"ipinfoToken,omitempty"`
 }
 
+var (
+	config       Config
+	configLoaded bool
+	cmutex       = deadlock.Mutex{}
+)
+
 func GetConfig() Config {
+	cmutex.Lock()
+	defer cmutex.Unlock()
+
+	if configLoaded {
+		return config
+	}
+
 	data, err := os.ReadFile("config.xml")
 	if err != nil {
 		panic(err)
 	}
 
-	var config Config
 	config.AllowDefaultDolphinKeys = true
-	//config.ServerName = config.CertPath
-	//config.ServerName = "WiiLink" //PP
+	config.AllowMultipleDeviceIDs = "never"
+	config.AllowConnectWithoutDeviceID = false
+	config.ServerName = "WiiLink"
 
 	err = xml.Unmarshal(data, &config)
 	if err != nil {
@@ -112,6 +136,14 @@ func GetConfig() Config {
 	if config.BackendFrontendAddress == "" {
 		config.BackendFrontendAddress = config.FrontendAddress
 	}
+
+	if config.AllowMultipleDeviceIDs == "true" || config.AllowMultipleDeviceIDs == "yes" {
+		config.AllowMultipleDeviceIDs = "always"
+	} else if config.AllowMultipleDeviceIDs != "SameIPAddress" {
+		config.AllowMultipleDeviceIDs = "never"
+	}
+
+	configLoaded = true
 
 	return config
 }

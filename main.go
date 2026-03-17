@@ -21,7 +21,9 @@ import (
 	"wwfc/logging"
 	"wwfc/nas"
 	"wwfc/natneg"
+	"wwfc/nhttp"
 	"wwfc/qr2"
+	"wwfc/race"
 	"wwfc/sake"
 	"wwfc/serverbrowser"
 
@@ -70,6 +72,12 @@ type RPCPacket struct {
 
 // backendMain starts all the servers and creates an RPC server to communicate with the frontend
 func backendMain(noSignal, noReload bool) {
+	err := os.Mkdir("state", 0755)
+	if err != nil && !os.IsExist(err) {
+		logging.Error("BACKEN", err)
+		os.Exit(1)
+	}
+
 	sigExit := make(chan os.Signal, 1)
 	signal.Notify(sigExit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -99,7 +107,7 @@ func backendMain(noSignal, noReload bool) {
 	}
 
 	wg := &sync.WaitGroup{}
-	actions := []func(bool){nas.StartServer, gpcm.StartServer, qr2.StartServer, gpsp.StartServer, serverbrowser.StartServer, sake.StartServer, natneg.StartServer, api.StartServer, gamestats.StartServer}
+	actions := []func(bool){nas.StartServer, gpcm.StartServer, qr2.StartServer, gpsp.StartServer, serverbrowser.StartServer, race.StartServer, sake.StartServer, natneg.StartServer, api.StartServer, gamestats.StartServer}
 	wg.Add(len(actions))
 	for _, action := range actions {
 		go func(ac func(bool)) {
@@ -215,7 +223,7 @@ func (r *RPCPacket) Shutdown(stateUuid string, _ *struct{}) error {
 	}
 
 	wg := &sync.WaitGroup{}
-	actions := []func(){nas.Shutdown, gpcm.Shutdown, qr2.Shutdown, gpsp.Shutdown, serverbrowser.Shutdown, sake.Shutdown, natneg.Shutdown, api.Shutdown, gamestats.Shutdown}
+	actions := []func(){nas.Shutdown, gpcm.Shutdown, qr2.Shutdown, gpsp.Shutdown, serverbrowser.Shutdown, race.Shutdown, sake.Shutdown, natneg.Shutdown, api.Shutdown, gamestats.Shutdown}
 	wg.Add(len(actions))
 	for _, action := range actions {
 		go func(ac func()) {
@@ -261,7 +269,8 @@ var (
 	rpcClient *rpc.Client
 
 	// This mutex could be locked for a very long time, don't use deadlock detection
-	rpcMutex sync.Mutex
+	rpcMutex   sync.Mutex
+	rpcWaiting nhttp.AtomicBool
 
 	rpcBusyCount sync.WaitGroup
 	backendReady = make(chan struct{})
@@ -274,6 +283,8 @@ var (
 
 // frontendMain starts the backend process and communicates with it using RPC
 func frontendMain(noSignal, noBackend bool) {
+	rpcWaiting.SetFalse()
+
 	integrated = !noBackend
 
 	sigExit := make(chan os.Signal, 1)
@@ -318,10 +329,22 @@ func frontendMain(noSignal, noBackend bool) {
 		select {}
 	}
 
-	if rpcClient == nil {
+	// If we're waiting for the backend to connect, then don't try to lock the
+	// mutex because it's never going to unlock
+	if rpcWaiting.IsSet() {
+		logging.Notice("FRONTEND", "Backend rpcClient is not connected")
 		return
 	}
 
+	rpcMutex.Lock()
+	if rpcClient == nil {
+		logging.Notice("FRONTEND", "Backend rpcClient is not connected")
+		rpcMutex.Unlock()
+		return
+	}
+	rpcMutex.Unlock()
+
+	logging.Notice("FRONTEND", "Sending RPCPacket.Shutdown")
 	rpcClient.Call("RPCPacket.Shutdown", "", nil)
 	rpcClient.Close()
 }
@@ -386,6 +409,7 @@ func startBackendProcess(reload bool, wait bool) {
 // waitForBackend waits for the backend to start.
 // Expects the RPC mutex to be locked.
 func waitForBackend() {
+	rpcWaiting.SetTrue()
 	<-backendReady
 	backendReady = make(chan struct{})
 
@@ -395,6 +419,7 @@ func waitForBackend() {
 			rpcClient = client
 			rpcMutex.Unlock()
 
+			rpcWaiting.SetFalse()
 			logging.Notice("FRONTEND", "Connected to backend")
 
 			return

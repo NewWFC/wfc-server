@@ -20,11 +20,15 @@ type LoginInfo struct {
 	Trusted             bool
 	OpenHoster          bool
 	CTGPVER             string
+	DeluxeBan           bool
+	BanLenght           int64
+	csnum               string
 }
 
 var logins = map[uint32]*LoginInfo{}
 
-func Login(profileID uint32, gameCode string, inGameName string, consoleFriendCode uint64, fcGame string, publicIP string, needsExploit bool, deviceAuthenticated bool, restricted bool, trusted bool, openhost bool, ctgpver string) {
+func Login(profileID uint32, gameCode string, inGameName string, consoleFriendCode uint64, fcGame string, publicIP string, needsExploit bool, deviceAuthenticated bool, restricted bool, trusted bool, openhost bool, ctgpver string, deluxeban bool, banlenght int64, csnum string) {
+	//func Login(profileID uint32, gameCode string, inGameName string, consoleFriendCode uint64, fcGame string, publicIP string, needsExploit bool, deviceAuthenticated bool, restricted bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -42,8 +46,10 @@ func Login(profileID uint32, gameCode string, inGameName string, consoleFriendCo
 		Trusted:             trusted,
 		OpenHoster:          openhost,
 		CTGPVER:             ctgpver,
+		DeluxeBan:           deluxeban,
+		BanLenght:           banlenght,
+		csnum:               csnum,
 	}
-	//fmt.Println(logins[profileID])
 }
 
 func SetDeviceAuthenticated(profileID uint32) {

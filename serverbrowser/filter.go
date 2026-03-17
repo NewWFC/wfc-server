@@ -2,13 +2,12 @@ package serverbrowser
 
 import (
 	"strconv"
-	"wwfc/logging"
-
-	//"wwfc/qr2"
-	"wwfc/serverbrowser/filter"
-
 	"strings"
+	"time"
 	"wwfc/gpcm"
+	"wwfc/logging"
+	"wwfc/qr2"
+	"wwfc/serverbrowser/filter"
 
 	"github.com/logrusorgru/aurora/v3"
 )
@@ -44,15 +43,75 @@ func filterServers(moduleName string, servers []map[string]string, queryGame str
 			continue
 		}
 
-		ret, err := filter.Eval(tree, server, queryGame)
-		if err != nil {
-			logging.Error(moduleName, "Error evaluating filter:", err.Error())
-			return []map[string]string{}
-		}
 		if server["gamename"] == "mariokartwii" {
-			if strings.HasPrefix(server["rk"], "vp") || strings.HasPrefix(server["rk"], "bp") {
+			if server["rk"] != "" && len(server["rk"]) > 2 {
+				if rk, err := strconv.Atoi(server["rk"][3:]); err == nil {
+					//if server["+DB"] == "true" && (strings.HasPrefix(server["rk"], "vs_760") || strings.HasPrefix(server["rk"], "bt_760") || strings.HasPrefix(server["rk"], "vs_825") || strings.HasPrefix(server["rk"], "bt_825")) { //|| strings.HasPrefix(server["rk"], "cp") || (len(server["rk"]) == 4 && server["rk"][3] >= '0' && server["rk"][3] < '6') {
+					if server["+DB"] == "true" && rk != 191 && rk != 866 && (rk >= 7 && rk < 20000) { //PP bans //760
+						//ret = 0
+						// Check if the value exists
+						dwcPidStr, ok := server["dwc_pid"]
+
+						if !ok {
+							// Handle the case when dwc_pid key does not exist
+							continue
+						}
+
+						// Convert string to int
+						dwcPidInt, err := strconv.Atoi(dwcPidStr)
+						if err != nil {
+							// Handle the case when dwc_pid cannot be converted to int
+							continue
+						}
+
+						// Convert int to int32
+						dwcPid := int32(dwcPidInt)
+						gpcm.KickPlayer(uint32(dwcPid), "delbanned") //PP //NoMutex thing
+						//qr2.PayloadUser(uint32(dwcPid))
+						continue
+
+					}
+					if server["+csnum"] == "" && rk == 760 { //deluxe csnum check
+						// Check if the value exists
+						dwcPidStr, ok := server["dwc_pid"]
+						if !ok {
+							// Handle the case when dwc_pid key does not exist
+							continue
+						}
+						// Convert string to int
+						dwcPidInt, err := strconv.Atoi(dwcPidStr)
+						if err != nil {
+							// Handle the case when dwc_pid cannot be converted to int
+							continue
+						}
+						dwcPid := int32(dwcPidInt)
+						gpcm.KickPlayer(uint32(dwcPid), "restartgame") //PP //NoMutex thing
+						//qr2.PayloadUser(uint32(dwcPid))
+						continue
+					} else if server["+csnum"] == "0" && rk == 760 {
+						// Check if the value exists
+						dwcPidStr, ok := server["dwc_pid"]
+						if !ok {
+							// Handle the case when dwc_pid key does not exist
+							continue
+						}
+						// Convert string to int
+						dwcPidInt, err := strconv.Atoi(dwcPidStr)
+						if err != nil {
+							// Handle the case when dwc_pid cannot be converted to int
+							continue
+						}
+						dwcPid := int32(dwcPidInt)
+						gpcm.KickPlayer(uint32(dwcPid), "alreadyregistered") //PP //NoMutex thing
+						//qr2.PayloadUser(uint32(dwcPid))
+						continue
+					}
+				}
+			}
+
+			if strings.HasPrefix(server["rk"], "vp") || strings.HasPrefix(server["rk"], "bp") || strings.HasPrefix(server["rk"], "cp") || (len(server["rk"]) == 4 && server["rk"][3] >= '0' && server["rk"][3] < '6') {
 				if server["+trusted"] == "false" {
-					ret = 0
+					//ret = 0
 					// Check if the value exists
 					dwcPidStr, ok := server["dwc_pid"]
 
@@ -70,10 +129,25 @@ func filterServers(moduleName string, servers []map[string]string, queryGame str
 
 					// Convert int to int32
 					dwcPid := int32(dwcPidInt)
-					gpcm.KickPlayer(uint32(dwcPid), "restricted_join")
+
+					gpcm.PayloadUser(uint32(dwcPid))
+					qr2.PayloadUserTrusted(uint32(dwcPid))
+					logging.Notice("payloaded filter")
+					//gpcm.KickPlayerDelay(uint32(dwcPid), "untrusted") //PP //NoMutex thing
+					go func() {
+						time.Sleep(3 * time.Second)
+						gpcm.KickPlayer(uint32(dwcPid), "untrusted") //PP //NoMutex thing
+					}()
+					continue
 
 				}
 			}
+		}
+
+		ret, err := filter.Eval(tree, server, queryGame)
+		if err != nil {
+			logging.Error(moduleName, "Error evaluating filter:", err.Error())
+			return []map[string]string{}
 		}
 
 		if ret != 0 {

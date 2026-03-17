@@ -3,6 +3,8 @@ package gpcm
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 	"unicode/utf16"
 	"wwfc/common"
 	"wwfc/logging"
@@ -31,11 +33,21 @@ type WWFCErrorMessage struct {
 }
 
 type GPError struct {
-	ErrorCode   int
-	ErrorString string
-	Fatal       bool
-	WWFCMessage WWFCErrorMessage
+	ErrorCode    int
+	ErrorString  string
+	Fatal        bool
+	WWFCMessage  WWFCErrorMessage
+	Reason       string
+	FriendCode   string
+	BanExpiry    int64
+	PublicReason string
 }
+
+const (
+	publicReasonLineWidth   = 32
+	publicReasonMinNewlines = 5
+	publicReasonWordLimit   = 10
+)
 
 func MakeGPError(errorCode int, errorString string, fatal bool) GPError {
 	return GPError{
@@ -43,6 +55,121 @@ func MakeGPError(errorCode int, errorString string, fatal bool) GPError {
 		ErrorString: errorString,
 		Fatal:       fatal,
 	}
+}
+
+func publicreason(reason string, errorstring string) string {
+	/*
+		LangEnglish: "" +
+					"Banned from Regionals\n" +
+					"for breaking ToS\n" +
+					"" +
+					"Refer to server rules\n" +
+					"\n" + //\n" +
+					//"Error: %[1]d\n" +
+					//"NG: NG%08[2]x\n" +
+					"FC: %[3]s\n" +
+					"Banned until: %[4]s",
+			},
+	*/
+	//32 spaces
+	if reason == "" {
+		return "" +
+			"Banned from Regionals\n" +
+			"for breaking ToS\n" +
+			"" +
+			"Refer to server rules\n" +
+			"\n" + //\n" +
+			"Error: " + errorstring + "\n\n"
+
+	} else {
+		//fixedreason := ""
+		fixedreason := "Ban reason:\n" + formatPublicReason(reason)
+		return fixedreason
+	}
+	//output := ""
+	//return output
+}
+
+func formatPublicReason(reason string) string {
+
+	if reason == "" {
+		return strings.Repeat("\n", publicReasonMinNewlines)
+	}
+
+	var b strings.Builder
+	lineLen := 0
+	newlineCount := 0
+	wordBuf := make([]rune, 0, publicReasonWordLimit)
+
+	flushWord := func() {
+		if len(wordBuf) == 0 {
+			return
+		}
+		written := 0
+		wordLen := len(wordBuf)
+		for written < wordLen {
+			if lineLen > 0 && lineLen+wordLen-written > publicReasonLineWidth {
+				b.WriteRune('\n')
+				newlineCount++
+				lineLen = 0
+			}
+			if lineLen == publicReasonLineWidth {
+				b.WriteRune('\n')
+				newlineCount++
+				lineLen = 0
+			}
+			spaceAvail := publicReasonLineWidth - lineLen
+			chunk := wordLen - written
+			if chunk > spaceAvail {
+				chunk = spaceAvail
+			}
+			b.WriteString(string(wordBuf[written : written+chunk]))
+			lineLen += chunk
+			written += chunk
+			if written < wordLen {
+				b.WriteRune('\n')
+				newlineCount++
+				lineLen = 0
+			}
+		}
+		wordBuf = wordBuf[:0]
+	}
+
+	for _, r := range reason {
+		switch r {
+		case '\n':
+			flushWord()
+			b.WriteRune('\n')
+			newlineCount++
+			lineLen = 0
+		case ' ':
+			flushWord()
+			if lineLen == 0 {
+				continue
+			}
+			if lineLen+1 > publicReasonLineWidth {
+				b.WriteRune('\n')
+				newlineCount++
+				lineLen = 0
+				continue
+			}
+			b.WriteRune(' ')
+			lineLen++
+		default:
+			wordBuf = append(wordBuf, r)
+			if len(wordBuf) >= publicReasonWordLimit {
+				flushWord()
+			}
+		}
+	}
+	flushWord()
+
+	for newlineCount < publicReasonMinNewlines {
+		b.WriteRune('\n')
+		newlineCount++
+	}
+
+	return b.String()
 }
 
 var (
@@ -174,7 +301,8 @@ var (
 			LangEnglish: "" +
 				"An unknown error has occurred\n" +
 				"while logging in to NewWFC.\n" +
-				"\n" +
+				"too many logged in at the\n" +
+				"same time?\n" +
 				"Error Code: %[1]d",
 		},
 	}
@@ -195,7 +323,7 @@ var (
 		ErrorCode: 22002,
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
-				"You are banned from WiiLink WFC\n" +
+				"You are banned from NewWFC\n" +
 				"due to a violation of the\n" +
 				"Terms of Service.\n" +
 				"Visit newwfc.xyz/tos\n" +
@@ -212,10 +340,69 @@ var (
 				"You have been banned from\n" +
 				"NewWFC due to a violation\n" +
 				"of the Terms of Service.\n" +
-				"Visit NewWFC.xyz/tos\n" +
+				"Visit newwfc.xyz/tos\n" +
 				"\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
+		},
+	}
+
+	WWFCMsgProfileBannedTOSNowDeluxe = WWFCErrorMessage{
+		ErrorCode: 22003, //22002,
+		//MessageRMC: map[byte][]string{
+		//	LangEnglish: {wimmstr},
+		//},
+		MessageRMC: map[byte]string{
+			// 	LangEnglish: "" +
+			// 		"Communication error. You\n" +
+			// 		"have been disconnected from\n" +
+			// 		"Wiimmfi WFC\n" +
+			// 		"For help, visit http://wiimmfi.de/error\n\n" +
+			// 		"Error Code: %[1]d\n",
+			// },
+			// 	LangEnglish: "" +
+			// 		"Banned from Regionals\n" +
+			// 		"for breaking ToS\n" +
+			// 		"" +
+			// 		"Refer to server rules\n" +
+			// 		"\n" + //\n" +
+			// 		//"Error: %[1]d\n" +
+			// 		//"NG: NG%08[2]x\n" +
+			// 		"FC: %[3]s\n" +
+			// 		"Banned until: %[4]s",
+			// },
+			LangEnglish: "" + //\n" +
+				"%[5]s" +
+				//"Error: %[1]d\n" +
+				//"NG: NG%08[2]x\n" +
+				"FC: %[3]s\n" +
+				"Until: %[4]s",
+		},
+	}
+
+	WWFCMsgInvalidData = WWFCErrorMessage{
+		ErrorCode: 22403,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You were disconnected from\n" +
+				"NewWFC due to invalid data.\n" +
+				"Please restart your game.\n" +
+				"\n" +
+				"FC: %[3]s\n" +
+				"Error Code: %[1]d",
+		},
+	}
+
+	WWFCMsgreregistered = WWFCErrorMessage{
+		ErrorCode: 22403,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You were disconnected from\n" +
+				"NewWFC, this friend code.\n" +
+				"is already registered to another.\n" +
+				"console.\n" +
+				"FC: %[3]s\n" +
+				"Error Code: %[1]d",
 		},
 	}
 
@@ -242,6 +429,51 @@ var (
 				"of the NewWFC Rules.\n" +
 				"Visit newwfc.xyz/rules\n" +
 				"\n" +
+				"Error Code: %[1]d\n" +
+				"Support Info: NG%08[2]x",
+		},
+	}
+
+	WWFCMsgProfileUntrusted = WWFCErrorMessage{
+		ErrorCode: 22404,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You aren't whitelisted in legit region\n" +
+				"Please go to the discord and verify\n" +
+				"yourself\n" +
+				"Visit discord.newwfc.xyz\n" +
+				"\n" +
+				"Error Code: %[1]d\n" +
+				"Support Info: NG%08[2]x",
+		},
+		// 			LangEnglish: "" +
+		// 		"You aren't verified with the server\n" +
+		// 		"Please go to the discord and verify\n" +
+		// 		"yourself\n" +
+		// 		"Visit discord.newwfc.xyz\n" +
+		// 		"\n" +
+		// 		"Error Code: %[1]d\n" +
+		// 		"Support Info: NG%08[2]x",
+		// },
+	}
+
+	WWFCMsgProfileRestrictedCustom = WWFCErrorMessage{
+		ErrorCode: 22002,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You are banned from public matches.\n" +
+				"Reason: %[3]s\n" +
+				"Error Code: %[1]d\n" +
+				"Support Info: NG%08[2]x",
+		},
+	}
+
+	WWFCMsgProfileRestrictedNowCustom = WWFCErrorMessage{
+		ErrorCode: 22002,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You have been banned from public matches.\n" +
+				"Reason: %[3]s\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
 		},
@@ -278,6 +510,17 @@ var (
 				"friend room by the room creator.\n" +
 				"\n" +
 				"Error Code: %[1]d",
+		},
+	}
+
+	WWFCMsgKickedCustom = WWFCErrorMessage{
+		ErrorCode: 22002,
+		MessageRMC: map[byte]string{
+			LangEnglish: "" +
+				"You have been kicked from NewWFC.\n" +
+				"Reason: %[3]s\n" +
+				"Error Code: %[1]d\n" +
+				"Support Info: NG%08[2]x\n",
 		},
 	}
 
@@ -370,7 +613,8 @@ func (err GPError) GetMessage() string {
 	return common.CreateGameSpyMessage(command)
 }
 
-func (err GPError) GetMessageTranslate(gameName string, region byte, lang byte, cfc uint64, ngid uint32) string {
+// func (err GPError) GetMessageTranslate(gameName string, region byte, lang byte, cfc uint64, ngid uint32) string {
+func (err GPError) GetMessageTranslate(gameName string, region byte, lang byte, cfc uint64, ngid uint32, fc uint32, banlenght int64, Publicreason string) string {
 	command := common.GameSpyCommand{
 		Command:      "error",
 		CommandValue: "",
@@ -387,18 +631,56 @@ func (err GPError) GetMessageTranslate(gameName string, region byte, lang byte, 
 	if err.Fatal && err.WWFCMessage.ErrorCode != 0 {
 		switch gameName {
 		case "mariokartwii":
-			errMsg := err.WWFCMessage.MessageRMC[lang]
-			if errMsg == "" {
-				errMsg = err.WWFCMessage.MessageRMC[LangEnglish]
+			reason := err.Reason
+			wwfcMessage := err.WWFCMessage
+
+			if reason == "" {
+				reason = "None provided."
+
+				engMsg := err.WWFCMessage.MessageRMC[LangEnglish]
+
+				if engMsg == WWFCMsgKickedCustom.MessageRMC[LangEnglish] {
+					wwfcMessage = WWFCMsgKickedModerator
+				} else if engMsg == WWFCMsgProfileRestrictedCustom.MessageRMC[LangEnglish] {
+					wwfcMessage = WWFCMsgProfileRestricted
+				} else if engMsg == WWFCMsgProfileRestrictedNowCustom.MessageRMC[LangEnglish] {
+					wwfcMessage = WWFCMsgProfileRestrictedNow
+				}
 			}
 
-			errMsg = fmt.Sprintf(errMsg, err.WWFCMessage.ErrorCode, ngid)
-			errMsgUTF16 := utf16.Encode([]rune(errMsg))
-			errMsgByteArray := common.UTF16ToByteArray(errMsgUTF16)
+			errMsg := wwfcMessage.MessageRMC[lang]
+			if errMsg == "" && lang != LangEnglish {
+				if lang == LangSpanishEU {
+					errMsg = wwfcMessage.MessageRMC[LangSpanish]
+				} else if lang == LangFrenchEU {
+					errMsg = wwfcMessage.MessageRMC[LangFrench]
+				}
 
-			command.OtherValues["wwfc_err"] = strconv.Itoa(err.WWFCMessage.ErrorCode)
-			command.OtherValues["wwfc_errmsg"] = common.Base64DwcEncoding.EncodeToString(errMsgByteArray)
+				if errMsg == "" {
+					errMsg = wwfcMessage.MessageRMC[LangEnglish]
+				}
+			}
+
+			if errMsg != "" {
+				fcRMCJ := common.CalcFriendCode(fc, "RMCJ")
+				fcformated := fmt.Sprintf("%012d", fcRMCJ) // zero-pad to 12 digits
+				fcWithDashes := fmt.Sprintf("%s-%s-%s", fcformated[:4], fcformated[4:8], fcformated[8:12])
+				bandate := ""
+				if banlenght > 0 {
+					//banlenght = banlenght // - 2*60*60 // subtract 2 hours in seconds (I'm in germany time, will have to correct this eventually)
+					bandate = time.Unix(banlenght, 0).UTC().Format("2006-01-02 15:04:05 UTC")
+				}
+				//publicReasonLine := formatPublicReason(err.PublicReason, strconv.Itoa(wwfcMessage.ErrorCode))
+				errMsg = fmt.Sprintf(errMsg, err.WWFCMessage.ErrorCode, ngid, fcWithDashes, bandate, publicreason(Publicreason, strconv.Itoa(err.WWFCMessage.ErrorCode)))
+				//errMsg = fmt.Sprintf(errMsg, wwfcMessage.ErrorCode, ngid, friendCode, bandate, publicReasonLine)
+				errMsgUTF16 := utf16.Encode([]rune(errMsg))
+				errMsgByteArray := common.UTF16ToByteArray(errMsgUTF16)
+				command.OtherValues["wwfc_errmsg"] = common.Base64DwcEncoding.EncodeToString(errMsgByteArray)
+				//command.OtherValues["wl:errmsg"] = common.Base64DwcEncoding.EncodeToString(errMsgByteArray)
+			}
 		}
+		command.OtherValues["wwfc_err"] = strconv.Itoa(err.WWFCMessage.ErrorCode)
+		//command.OtherValues["wl:err"] = strconv.Itoa(err.WWFCMessage.ErrorCode)
 	}
 
 	return common.CreateGameSpyMessage(command)
@@ -417,11 +699,12 @@ func (g *GameSpySession) replyError(err GPError) {
 	}
 
 	deviceId := g.User.RestrictedDeviceId
-	if deviceId == 0 {
-		deviceId = g.User.NgDeviceId
+	if deviceId == 0 && len(g.User.NgDeviceId) > 0 {
+		deviceId = uint32(g.User.NgDeviceId[0])
 	}
 
-	msg := err.GetMessageTranslate(g.GameName, g.Region, g.Language, g.ConsoleFriendCode, deviceId)
+	msg := err.GetMessageTranslate(g.GameName, g.Region, g.Language, g.ConsoleFriendCode, deviceId, g.User.ProfileId, g.User.BanLenght, g.User.Public_reason)
+	//msg := err.GetMessageTranslate(g.GameName, g.Region, g.Language, g.ConsoleFriendCode, deviceId)
 	// logging.Info(g.ModuleName, "Sending error message:", msg)
 	common.SendPacket(ServerName, g.ConnIndex, []byte(msg))
 	if err.Fatal {

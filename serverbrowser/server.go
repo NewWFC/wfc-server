@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"wwfc/common"
+	"wwfc/gpcm"
 	"wwfc/logging"
 	"wwfc/qr2"
 
@@ -80,6 +81,7 @@ func popUint32(buffer []byte, index int) (uint32, int, error) {
 }
 
 var regexSelfLookup = regexp.MustCompile(`^dwc_pid ?= ?(\d{1,10})$`)
+var rkRegexp = regexp.MustCompile(`rk\s*=\s*'([^']+)'`)
 
 func handleServerListRequest(moduleName string, connIndex uint64, address string, buffer []byte) {
 	index := 9
@@ -178,9 +180,88 @@ func handleServerListRequest(moduleName string, connIndex uint64, address string
 			// Self lookup is handled differently
 			servers = filterSelfLookup(moduleName, qr2.GetSessionServers(), queryGame, match[1], callerPublicIP)
 		} else {
+			logging.Notice(moduleName, "filterServers Filter serverbrowser/server.go:", aurora.Cyan(filter)) //PP
 			servers = filterServers(moduleName, qr2.GetSessionServers(), queryGame, filter, callerPublicIP)
+			//look here for deluxe bans
+			//region 760
+			//qr2.GetSessionFromAddr(needs int64 idk maybe from callerPublicIP)
+			//rk = 'vs_760'
+			ip, _ := common.IPFormatToInt(address)
+			serverscheck := qr2.GetSessionServers()
+			requestedRK := ""
+			if match := rkRegexp.FindStringSubmatch(filter); len(match) == 2 {
+				requestedRK = match[1]
+			}
+			kickall := false
+			//"dwc_mver = 90 and dwc_pid != 59163 and maxplayers = 11 and numplayers < 11 and dwc_mtype = 0 and dwc_hoststate = 2 and dwc_suspend = 0 and (rk = 'vs_760' and ev >= 7013 and ev <= 9999 and p = 0)"
+			for _, server := range serverscheck {
+
+				if server == nil {
+					continue
+				}
+				if server["+gppublicip"] == "" {
+					continue
+				}
+				gpip, err := strconv.ParseInt(server["+gppublicip"], 10, 32)
+				if err != nil {
+					continue
+				}
+				if ip != int32(gpip) {
+					continue
+				}
+				BadAuth := false
+				registered := false
+				if server["+csnum"] != "" && server["+csnum"] != "0" {
+					if server["+DB"] == "false" {
+						continue
+					}
+				} else {
+					if server["+csnum"] == "0" {
+						registered = true
+					}
+					BadAuth = true
+				}
+				if requestedRK != "" && len(requestedRK) > 3 {
+					if requestedRK[3:] != "760" {
+						continue
+					}
+					dwcpid, err := strconv.Atoi(server["dwc_pid"])
+					if err != nil {
+						continue
+					}
+					//gpcm.GetSessionServers()
+					if registered {
+						gpcm.KickPlayer(uint32(dwcpid), "alreadyregistered")
+					} else if BadAuth {
+						gpcm.KickPlayer(uint32(dwcpid), "restartgame")
+					} else {
+						gpcm.KickPlayer(uint32(dwcpid), "delbanned")
+					}
+					//acommon.KickPlayer(uint32(dwcpid), "delbanned")
+					kickall = true
+					//return
+				}
+				// if requestedRK != "" {
+				// 	if serverRK, ok := server["rk"]; !ok || serverRK != requestedRK {
+				// 		continue
+				// 	}
+				// }
+			}
+			if kickall { //to prevent multiple clients from bypassing the matchmake somehow, just return
+				return
+			}
 		}
 	}
+	/*
+		if options&NoServerListOption == 0 && filter != "" && filter != " " && filter != "0" {
+			if match := regexSelfLookup.FindStringSubmatch(filter); match != nil {
+				// Self lookup is handled differently
+				servers = filterSelfLookup(moduleName, qr2.GetSessionServers(), queryGame, match[1], callerPublicIP)
+			} else {
+				servers = filterServers(moduleName, qr2.GetSessionServers(), queryGame, filter, callerPublicIP)
+			}
+		}
+	*/
 
 	for _, server := range servers {
 		var flags byte

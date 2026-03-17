@@ -5,6 +5,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
+	"wwfc/acommon"
 	"wwfc/common"
 	"wwfc/logging"
 
@@ -17,7 +19,7 @@ func heartbeat(moduleName string, conn net.PacketConn, addr net.UDPAddr, buffer 
 
 	payload := map[string]string{}
 	unknowns := []string{}
-	for i := 0; i < len(values); i += 2 {
+	for i := 0; i < len(values)-1; i += 2 {
 		if len(values[i]) == 0 || values[i][0] == '+' {
 			continue
 		}
@@ -69,6 +71,96 @@ func heartbeat(moduleName string, conn net.PacketConn, addr net.UDPAddr, buffer 
 
 	statechanged, ok := payload["statechanged"]
 	if ok && statechanged == "2" {
+		if payload["gamename"] == "mariokartds" {
+			logging.Notice(moduleName, "Client session shutdown command from MARIO KART DS !!!!!!!!!!!!!!!!")
+			mutex.Lock()
+			session, exists := getSessionFromAddr(lookupAddr)
+			if exists {
+				if session.Data["numplayers"] == "0" || session.Data["+suspend"] == "true" {
+					session.Data["+suspend"] = ""
+					delete(session.Data, "+suspend")
+					session.Data["kart_elo"] = "" //yes, I'm doing this to prevent server panic //PP
+					delete(session.Data, "kart_elo")
+					session.Data["kart_filter"] = ""
+					delete(session.Data, "kart_filter")
+					session.Data["kart_region"] = ""
+					delete(session.Data, "kart_region")
+					session.Data["kart_type"] = ""
+					delete(session.Data, "kart_type")
+					session.Data["+state"] = ""
+					RemoveSessionGroup(lookupAddr)
+					logging.Notice(moduleName, "unlock in exists 1")
+					mutex.Unlock()
+				} else {
+					mutex.Unlock()
+					go func() {
+						//code here
+
+						dwcpid, err := strconv.ParseUint(session.Data["dwc_pid"], 10, 32)
+						if err != nil {
+							return
+						}
+						//logging.Notice(moduleName, session.Data["+suspend"])
+						if session.Data["+suspend"] != "true" {
+							time.Sleep(1 * time.Second)
+							state, ok := acommon.GetStateGPCM(uint32(dwcpid))
+							if !ok {
+								logging.Notice(moduleName, "notok1")
+								return
+							}
+							mutex.Lock()
+							defer mutex.Unlock()
+							logging.Notice(moduleName, "defer")
+							//expects mutex to be locked
+							session, exists := getSessionFromAddr(lookupAddr)
+							if !exists {
+								logging.Notice(moduleName, "notok2")
+								return
+							}
+							logging.Notice(moduleName, "state test 3:4 : ", state[3:4])
+							if state[3:4] == "2" {
+								session.Data["+state"] = state[3:4]
+								session.Data["+suspend"] = "true"
+
+								return
+							}
+
+							return
+						} else {
+							logging.Notice(moduleName, "else go funciton")
+							mutex.Lock()
+							defer mutex.Unlock()
+							//expects mutex to be locked
+							session, exists := getSessionFromAddr(lookupAddr)
+							if !exists {
+								return
+							}
+							session.Data["+state"] = ""
+							//session.Data["+state"] = state[3:4]
+							session.Data["+suspend"] = ""
+							delete(session.Data, "+suspend")
+							session.Data["kart_elo"] = ""
+							delete(session.Data, "kart_elo")
+							session.Data["kart_filter"] = ""
+							delete(session.Data, "kart_filter")
+							session.Data["kart_region"] = ""
+							delete(session.Data, "kart_region")
+							session.Data["kart_type"] = ""
+							delete(session.Data, "kart_type")
+							session.Data["numplayers"] = "0"
+							RemoveSessionGroup(lookupAddr)
+							return
+						}
+					}()
+
+				}
+				logging.Notice(moduleName, "return but after exists so yeah")
+				return
+			}
+			mutex.Unlock()
+			return
+			//logging.Notice(moduleName, "state test MKDS!!!!!!!!!!!!!!: ", state)
+		}
 		logging.Notice(moduleName, "Client session shutdown")
 		mutex.Lock()
 		removeSession(lookupAddr)
@@ -138,24 +230,40 @@ func heartbeat(moduleName string, conn net.PacketConn, addr net.UDPAddr, buffer 
 }
 
 func checkValidRating(moduleName string, payload map[string]string) string {
-	if payload["gamename"] == "mariokartwii" {
-		// ev and eb values must be in range 1 to 9999
-		if ev := payload["ev"]; ev != "" {
-			evInt, err := strconv.ParseInt(ev, 10, 16)
-			if err != nil || evInt < 1 || evInt > 65535 {
-				logging.Error(moduleName, "Invalid ev value:", aurora.Cyan(ev))
-				//return "invalid_elo"
-			}
-		}
+	if payload["gamename"] != "mariokartwii" {
+		return "ok"
+	}
 
-		if eb := payload["eb"]; eb != "" {
+	if public, isBattle := isPublicMatchRegion(payload["rk"]); public {
+		// ev and eb values must be in range 1 to 9999
+		if ev := payload["ev"]; !isBattle && ev != "" {
+			evInt, err := strconv.ParseInt(ev, 10, 16)
+			if err != nil || evInt < 0 || evInt > 999999 {
+				logging.Error(moduleName, "Invalid ev value:", aurora.Cyan(ev))
+				return "invalid_elo"
+			}
+		} else if eb := payload["eb"]; isBattle && eb != "" {
 			ebInt, err := strconv.ParseInt(eb, 10, 16)
-			if err != nil || ebInt < 1 || ebInt > 65535 {
+			if err != nil || ebInt < 0 || ebInt > 999999 {
 				logging.Error(moduleName, "Invalid eb value:", aurora.Cyan(eb))
-				//return "invalid_elo"
+				return "invalid_elo"
 			}
 		}
 	}
-
 	return "ok"
+}
+
+func isPublicMatchRegion(rk string) (bool, bool) {
+	if rk == "vs" {
+		return true, false
+	} else if rk == "bt" {
+		return true, true
+	} /*else if len(rk) == 4 && rk[3] >= '0' && rk[3] < '6' {
+		if strings.HasPrefix(rk, "vs_") {
+			return true, false
+		} else if strings.HasPrefix(rk, "bt_") {
+			return true, true
+		}
+	} */
+	return false, false
 }

@@ -63,14 +63,14 @@ func (g *GameStatsSession) authp(command common.GameSpyCommand) {
 		return
 	}
 
-	_, issueTime, userId, gsbrcd, _, _, _, _, _, _, _, _, err := common.UnmarshalNASAuthToken(authToken)
+	_, issueTime, userId, gsbrcd, _, _, _, _, _, _, _, err := common.UnmarshalNASAuthToken(authToken)
 	if err != nil {
 		logging.Error(g.ModuleName, "Error unmarshalling authtoken:", err.Error())
 		g.Write(errorCmd)
 		return
 	}
 
-	currentTime := time.Now()
+	currentTime := time.Now().UTC()
 	if issueTime.Before(currentTime.Add(-10*time.Minute)) || issueTime.After(currentTime) {
 		logging.Error(g.ModuleName, "Authtoken has expired")
 		g.Write(errorCmd)

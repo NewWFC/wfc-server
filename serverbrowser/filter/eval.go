@@ -6,7 +6,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"wwfc/gpcm"
+	"wwfc/logging"
+	"wwfc/qr2"
 )
 
 type expression struct {
@@ -38,18 +41,17 @@ func (this *expression) eval(basenode *TreeNode) int64 {
 			return this.getNumber(node)
 
 		case CatOther:
-			this.switchOther(node)
+			return this.switchOther(node)
 		}
 	}
 	panic("eval failed")
 }
 
-func (this *expression) switchOther(node *TreeNode) {
+func (this *expression) switchOther(node *TreeNode) int64 {
 	switch v1 := node.Value.(type) {
 	case *GroupToken:
 		if v1.GroupType == "()" {
-			this.eval(node)
-			return
+			return this.eval(node)
 		}
 	}
 	panic("invalid node " + node.String())
@@ -77,6 +79,16 @@ func (this *expression) switchFunction(node *TreeNode) int64 {
 		return this.evalMathOperator(this.evalMathPlus, node.Items())
 	case "-":
 		return this.evalMathOperator(this.evalMathMinus, node.Items())
+	case "&":
+		return this.evalMathOperator(this.evalMathAnd, node.Items())
+	case "|":
+		return this.evalMathOperator(this.evalMathOr, node.Items())
+	case "^":
+		return this.evalMathOperator(this.evalMathXor, node.Items())
+	case "<<":
+		return this.evalMathOperator(this.evalMathLShift, node.Items())
+	case ">>":
+		return this.evalMathOperator(this.evalMathRShift, node.Items())
 
 	case "and":
 		return this.evalAnd(node.Items())
@@ -144,6 +156,27 @@ func (this *expression) evalEquals(args []*TreeNode) int64 {
 	}
 }
 
+/*
+// Operator override
+func (this *expression) evalEqualsRK(value string) int64 {
+	rk := this.context["rk"]
+	// Check and remove regional searches due to the limited player count
+	// China (ID 6) gets a pass because it was never released
+	if len(rk) == 4 && (strings.HasPrefix(rk, "vs_") || strings.HasPrefix(rk, "bt_")) && rk[3] >= '0' && rk[3] < '6' {
+		rk = rk[:2]
+	}
+
+	if len(value) == 4 && (strings.HasPrefix(value, "vs_") || strings.HasPrefix(value, "bt_")) && value[3] >= '0' && value[3] < '6' {
+		value = value[:2]
+	}
+
+	if rk == value {
+		return 1
+	}
+	return 0
+}
+*/
+
 // Operator override //PP look here
 func (this *expression) evalEqualsRK(value string) int64 {
 	rk := this.context["rk"]
@@ -152,8 +185,91 @@ func (this *expression) evalEqualsRK(value string) int64 {
 	//PP
 	//gpcm.KickPlayer(uint32(pid), "moderator_kick")
 	//return ""
-	if val, kick := this.context["+trusted"]; kick && val == "false" {
-		if kick == true && (strings.HasPrefix(rk, "vp") || strings.HasPrefix(rk, "bp")) {
+	if rk != "" && len(rk) > 2 { //PP forgot to add this to this one 💀
+		if rk, err := strconv.Atoi(rk[3:]); err == nil {
+			if val, kick := this.context["+DB"]; kick && val == "true" { //Deluxe //PP bans //760
+				//if kick == true && (strings.HasPrefix(rk, "vs_760") || strings.HasPrefix(rk, "bt_760") || strings.HasPrefix(rk, "vs_825") || strings.HasPrefix(rk, "bt_825")) { //|| (len(rk) == 4 && rk[3] >= '0' && rk[3] < '6') {
+				if kick && rk != 191 && rk != 866 && (rk >= 7 && rk < 20000) {
+					// Check if the value exists
+					dwcPidStr, ok := this.context["dwc_pid"]
+					if !ok {
+						// Handle the case when dwc_pid key does not exist
+						return 0
+					}
+
+					// Convert string to int
+					dwcPidInt, err := strconv.Atoi(dwcPidStr)
+					if err != nil {
+						// Handle the case when dwc_pid cannot be converted to int
+						return 0
+					}
+
+					// Convert int to int32
+					dwcPid := int32(dwcPidInt)
+
+					gpcm.KickPlayer(uint32(dwcPid), "delbanned") //pp //no mutex thing
+					return 0
+				}
+			}
+
+			if val, kick := this.context["+csnum"]; kick && val == "" {
+				if kick && rk == 760 { //deluxe region
+					// Check if the value exists
+					dwcPidStr, ok := this.context["dwc_pid"]
+					if !ok {
+						// Handle the case when dwc_pid key does not exist
+						return 0
+					}
+					// Convert string to int
+					dwcPidInt, err := strconv.Atoi(dwcPidStr)
+					if err != nil {
+						// Handle the case when dwc_pid cannot be converted to int
+						return 0
+					}
+					dwcPid := int32(dwcPidInt)
+					gpcm.KickPlayer(uint32(dwcPid), "restartgame")
+					return 0
+				}
+			}
+			//alreadyregistered
+			if val, kick := this.context["+csnum"]; kick && val == "0" {
+				if kick && rk == 760 { //deluxe region
+					// Check if the value exists
+					dwcPidStr, ok := this.context["dwc_pid"]
+					if !ok {
+						// Handle the case when dwc_pid key does not exist
+						return 0
+					}
+					// Convert string to int
+					dwcPidInt, err := strconv.Atoi(dwcPidStr)
+					if err != nil {
+						// Handle the case when dwc_pid cannot be converted to int
+						return 0
+					}
+					dwcPid := int32(dwcPidInt)
+					gpcm.KickPlayer(uint32(dwcPid), "alreadyregistered")
+					return 0
+				}
+			} //alreadyregistered
+		}
+	}
+
+	//check value
+
+	if len(rk) == 4 && (strings.HasPrefix(rk, "vs_") || strings.HasPrefix(rk, "bt_")) && rk[3] >= '0' && rk[3] < '6' {
+		rk = string(rk[0]) + "p"
+		//rk = rk[:2]
+
+	}
+
+	if len(value) == 4 && (strings.HasPrefix(value, "vs_") || strings.HasPrefix(value, "bt_")) && value[3] >= '0' && value[3] < '6' {
+		//value = value[:2]
+		value = string(value[0]) + "p"
+
+	}
+
+	if val, kick := this.context["+trusted"]; kick && val == "false" { //Deluxe
+		if kick && (strings.HasPrefix(rk, "vp") || strings.HasPrefix(rk, "bp")) || (len(rk) == 4 && rk[3] >= '0' && rk[3] < '6') {
 			// Check if the value exists
 			dwcPidStr, ok := this.context["dwc_pid"]
 			if !ok {
@@ -170,18 +286,26 @@ func (this *expression) evalEqualsRK(value string) int64 {
 
 			// Convert int to int32
 			dwcPid := int32(dwcPidInt)
-
-			gpcm.KickPlayer(uint32(dwcPid), "restricted_join") //pp
+			gpcm.PayloadUser(uint32(dwcPid))
+			qr2.PayloadUserTrusted(uint32(dwcPid))
+			//qr2.SendClientExploit(moduleName, this.context)
+			logging.Notice("payloaded eval")
+			// gpcm.KickPlayerDelay(uint32(dwcPid), "untrusted") //pp //no mutex thing
+			go func() {
+				time.Sleep(3 * time.Second)
+				gpcm.KickPlayer(uint32(dwcPid), "untrusted") //PP //NoMutex thing
+			}()
 			return 0
 		}
 	}
-	//check value
 
-	if len(rk) == 4 && (strings.HasPrefix(rk, "vs_") || strings.HasPrefix(rk, "bt_")) && rk[3] >= '0' && rk[3] < '6' {
+	if len(rk) == 4 && (strings.HasPrefix(rk, "vp_") || strings.HasPrefix(rk, "bp_")) && rk[3] >= '0' && rk[3] < '6' {
+
 		rk = rk[:2]
 	}
 
-	if len(value) == 4 && (strings.HasPrefix(value, "vs_") || strings.HasPrefix(value, "bt_")) && value[3] >= '0' && value[3] < '6' {
+	if len(value) == 4 && (strings.HasPrefix(value, "vp_") || strings.HasPrefix(value, "bp_")) && value[3] >= '0' && value[3] < '6' {
+
 		value = value[:2]
 	}
 
@@ -321,6 +445,26 @@ func (this *expression) evalMathLessOrEqual(val1, val2 int64) int64 {
 	return 0
 }
 
+func (this *expression) evalMathAnd(val1, val2 int64) int64 {
+	return val1 & val2
+}
+
+func (this *expression) evalMathOr(val1, val2 int64) int64 {
+	return val1 | val2
+}
+
+func (this *expression) evalMathXor(val1, val2 int64) int64 {
+	return val1 ^ val2
+}
+
+func (this *expression) evalMathLShift(val1, val2 int64) int64 {
+	return val1 << val2
+}
+
+func (this *expression) evalMathRShift(val1, val2 int64) int64 {
+	return val1 >> val2
+}
+
 func (this *expression) evalLike(args []*TreeNode) int64 {
 	cnt := len(args)
 	switch {
@@ -391,7 +535,9 @@ func (this *expression) getValue(token *IdentityToken) string {
 func (this *expression) toInt64(value string) int64 {
 	val, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		panic(err)
+		logging.Notice("Panic at func (this *expression) toInt64(value string) int64 {")
+		val = -1
+		//panic(err)
 	}
 
 	return val

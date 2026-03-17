@@ -264,6 +264,17 @@ func sendMessageToSession(msgType string, from uint32, session *GameSpySession, 
 	common.SendPacket(ServerName, session.ConnIndex, []byte(message))
 }
 
+func sendKickMessageToSession(msgType string, session *GameSpySession, msg string) {
+	message := common.CreateGameSpyMessage(common.GameSpyCommand{
+		Command:      "dc",
+		CommandValue: msgType,
+		OtherValues: map[string]string{
+			"msg": msg,
+		},
+	})
+	common.SendPacket(ServerName, session.ConnIndex, []byte(message))
+}
+
 func sendMessageToSessionBuffer(msgType string, from uint32, session *GameSpySession, msg string) {
 	session.WriteBuffer += common.CreateGameSpyMessage(common.GameSpyCommand{
 		Command:      "bm",
@@ -282,6 +293,16 @@ func sendMessageToProfileId(msgType string, from uint32, to uint32, msg string) 
 	}
 
 	logging.Info("GPCM", "Destination", aurora.Cyan(to), "from", aurora.Cyan(from), "is not online")
+	return false
+}
+
+func SendKickMessageToProfileId(msgType string, to uint32, msg string) bool {
+	if session, ok := sessions[to]; ok && session.LoggedIn {
+		sendKickMessageToSession(msgType, session, msg)
+		return true
+	}
+
+	logging.Info("GPCM", "Player ", aurora.Cyan(to), " is not online to send kick command to")
 	return false
 }
 

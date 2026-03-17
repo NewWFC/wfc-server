@@ -11,6 +11,7 @@ import (
 	"time"
 	"wwfc/common"
 	"wwfc/logging"
+	"wwfc/nhttp"
 
 	"github.com/logrusorgru/aurora/v3"
 )
@@ -33,7 +34,6 @@ const (
 	NNReportReply         = 0x0E
 	NNPreInitRequest      = 0x0F
 	NNPreInitReply        = 0x10
-	NNInitRequestWimm     = 0x80
 
 	// Port type
 	PortTypeGamePort = 0x00
@@ -83,7 +83,7 @@ var (
 	mutex      = sync.RWMutex{}
 	natnegConn net.PacketConn
 
-	inShutdown = false
+	inShutdown nhttp.AtomicBool
 	waitGroup  = sync.WaitGroup{}
 )
 
@@ -98,7 +98,7 @@ func StartServer(reload bool) {
 	}
 
 	natnegConn = conn
-	inShutdown = false
+	inShutdown.SetFalse()
 
 	if reload {
 		// Load state
@@ -136,7 +136,7 @@ func StartServer(reload bool) {
 		logging.Notice("NATNEG", "Listening on", aurora.BrightCyan(address))
 
 		for {
-			if inShutdown {
+			if inShutdown.IsSet() {
 				return
 			}
 
@@ -154,7 +154,7 @@ func StartServer(reload bool) {
 }
 
 func Shutdown() {
-	inShutdown = true
+	inShutdown.SetTrue()
 	natnegConn.Close()
 	waitGroup.Wait()
 
@@ -241,10 +241,6 @@ func handleConnection(conn net.PacketConn, addr net.Addr, buffer []byte) {
 		// logging.Info(moduleName, "Command:", aurora.Yellow("NN_INIT"))
 		session.handleInit(conn, addr, buffer[12:], moduleName, version)
 
-	case NNInitRequestWimm:
-		// logging.Info(moduleName, "Command:", aurora.Yellow("NN_INIT"))
-		session.handleInit(conn, addr, buffer[12:], moduleName, version)
-
 	case NNInitReply:
 		logging.Warn(moduleName, "Received server command:", aurora.Yellow("NN_INITACK"))
 
@@ -300,7 +296,7 @@ func handleConnection(conn net.PacketConn, addr net.Addr, buffer []byte) {
 
 func closeSession(moduleName string, session *NATNEGSession) {
 	mutex.Lock()
-	if inShutdown {
+	if inShutdown.IsSet() {
 		mutex.Unlock()
 		return
 	}

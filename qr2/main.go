@@ -7,6 +7,7 @@ import (
 	"time"
 	"wwfc/common"
 	"wwfc/logging"
+	"wwfc/nhttp"
 
 	"github.com/logrusorgru/aurora/v3"
 )
@@ -29,7 +30,7 @@ const (
 
 var (
 	masterConn net.PacketConn
-	inShutdown = false
+	inShutdown nhttp.AtomicBool
 	waitGroup  = sync.WaitGroup{}
 )
 
@@ -44,7 +45,7 @@ func StartServer(reload bool) {
 	}
 
 	masterConn = conn
-	inShutdown = false
+	inShutdown.SetFalse()
 
 	if reload {
 		err := loadSessions()
@@ -79,7 +80,7 @@ func StartServer(reload bool) {
 		logging.Notice("QR2", "Listening on", aurora.BrightCyan(address))
 
 		for {
-			if inShutdown {
+			if inShutdown.IsSet() {
 				return
 			}
 
@@ -97,7 +98,7 @@ func StartServer(reload bool) {
 }
 
 func Shutdown() {
-	inShutdown = true
+	inShutdown.SetTrue()
 	masterConn.Close()
 	waitGroup.Wait()
 
@@ -201,7 +202,7 @@ func handleConnection(conn net.PacketConn, addr net.UDPAddr, buffer []byte) {
 		// logging.Info(moduleName, "Command:", aurora.Yellow("KEEPALIVE"))
 		conn.WriteTo(createResponseHeader(KeepAliveRequest, 0), &addr)
 
-		session.LastKeepAlive = time.Now().Unix()
+		session.LastKeepAlive = time.Now().UTC().Unix()
 		return
 
 	case AvailableRequest:

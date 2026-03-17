@@ -99,31 +99,13 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 		switch strings.ToLower(action) {
 		case "acctcreate":
 			reply = acctcreate()
-			break
 
 		case "login":
 			isLocalhost := strings.HasPrefix(r.RemoteAddr, "127.0.0.1:") || strings.HasPrefix(r.RemoteAddr, "[::1]:")
-			ctgpver := string("")
-
-			//if _, exists := fields["_ctgpver"]; exists {
-			//	// Field "_ctgpver" exists in the map
-			//	isLocalhost = false
-			//}
-			if _, exists := fields["_payload_ver"]; exists {
-				// Field "_ctgpver" exists in the map
-				isLocalhost = false
-			}
-			if _, exists := fields["_ctgpver"]; exists {
-				// Field "_ctgpver" exists in the map
-				ctgpver = fields["_ctgpver"]
-				fmt.Println("CTGP FOUND: ", ctgpver) //PP CTGP PP
-			}
-			reply = login(moduleName, fields, isLocalhost, ctgpver)
-			break
+			reply = login(moduleName, fields, isLocalhost)
 
 		case "svcloc":
 			reply = svcloc(fields)
-			break
 
 		default:
 			logging.Error(moduleName, "Unknown action:", aurora.Cyan(action))
@@ -131,7 +113,6 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 				"retry":    "0",
 				"returncd": "109",
 			}
-			break
 		}
 	} else if r.URL.String() == "/pr" {
 		words, ok := fields["words"]
@@ -141,7 +122,7 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		reply = handleProfanity(fields)
+		reply = handleProfanity(r.PostForm, unitcd)
 	} else if r.URL.String() == "/download" {
 		action, ok := fields["action"]
 		if !ok || action == "" {
@@ -160,7 +141,6 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 		switch strings.ToLower(action) {
 		case "count":
 			response = []byte(dlsCount(fields))
-			break
 
 		default:
 			logging.Error(moduleName, "Unknown action:", aurora.Cyan(action))
@@ -168,7 +148,6 @@ func handleAuthRequest(moduleName string, w http.ResponseWriter, r *http.Request
 				"retry":    "0",
 				"returncd": "109",
 			}
-			break
 		}
 
 		w.Header().Set("X-DLS-Host", "http://127.0.0.1/")
@@ -200,7 +179,7 @@ func acctcreate() map[string]string {
 	}
 }
 
-func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpver string) map[string]string {
+func login(moduleName string, fields map[string]string, isLocalhost bool) map[string]string {
 	param := map[string]string{
 		"retry":    "0",
 		"datetime": getDateTime(),
@@ -286,6 +265,13 @@ func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpve
 		}
 	}
 
+	// csnum, ok := fields["csnum"]
+	// if !ok || len(csnum) > 16 { // Picked a random length. Serial numbers appear to be anywhere from 9-12?
+	// 	logging.Error(moduleName, "Missing or invalid csnum in form")
+	// 	// param["returncd"] = "103"
+	// 	// return param
+	// }
+
 	var authToken, challenge string
 	switch unitcdInt {
 	// ds
@@ -300,10 +286,10 @@ func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpve
 		// Only later DS games send this
 		ingamesn, ok := fields["ingamesn"]
 		if ok {
-			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], ingamesn, 0, isLocalhost, ctgpver)
+			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], ingamesn, 0, isLocalhost)
 			logging.Notice(moduleName, "Login (DS)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "devname:", aurora.Cyan(devname), "ingamesn:", aurora.Cyan(ingamesn))
 		} else {
-			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], "", 0, isLocalhost, ctgpver)
+			authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, 0, 0, langByte[0], "", 0, isLocalhost)
 			logging.Notice(moduleName, "Login (DS)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "devname:", aurora.Cyan(devname))
 		}
 
@@ -335,7 +321,7 @@ func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpve
 			return param
 		}
 
-		authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, cfcInt, regionByte[0], langByte[0], fields["ingamesn"], 1, isLocalhost, ctgpver)
+		authToken, challenge = common.MarshalNASAuthToken(gamecd, userId, gsbrcd, cfcInt, regionByte[0], langByte[0], fields["ingamesn"], 1, isLocalhost)
 		logging.Notice(moduleName, "Login (Wii)", aurora.Cyan(strconv.FormatUint(userId, 10)), aurora.Cyan(gsbrcd), "ingamesn:", aurora.Cyan(fields["ingamesn"]))
 	}
 
@@ -346,7 +332,6 @@ func login(moduleName string, fields map[string]string, isLocalhost bool, ctgpve
 	}
 	param["challenge"] = challenge
 	param["token"] = authToken
-	param["ctgpver"] = ctgpver //PP Probably this ctgp ver
 
 	return param
 }
@@ -365,25 +350,90 @@ func svcloc(fields map[string]string) map[string]string {
 	default:
 		param["servicetoken"] = authToken
 		param["svchost"] = "n/a"
-		break
 
 	case "9000":
 		param["token"] = authToken
 		param["svchost"] = "dls1.nintendowifi.net"
-		break
 
 	case "9001":
 		param["servicetoken"] = authToken
 		param["svchost"] = "dls1.nintendowifi.net"
-		break
 	}
 
 	return param
 }
 
-func handleProfanity(fields map[string]string) map[string]string {
+func handleProfanity(form url.Values, unitcd string) map[string]string {
+	var wordsEncoding string
+	var wordsDefaultEncoding string
+	var wordsBytes []byte
+	var words string
+	var wordsRegion string
 	var prwords string
-	for _, word := range strings.Split(fields["words"], "\t") {
+
+	if unitcd == "0" {
+		wordsEncoding = "UTF-16LE"
+		wordsDefaultEncoding = "UTF-16LE"
+	} else {
+		wordsEncoding = "UTF-16BE"
+		wordsDefaultEncoding = "UTF-16BE"
+	}
+
+	if wencValues, ok := form["wenc"]; ok {
+		// It's okay for this to error, the real server
+		// just falls back to the default encoding in
+		// this case even if it cant properly handle it
+		wencDecoded, err := common.Base64DwcEncoding.DecodeString(wencValues[0])
+		if err == nil {
+			wordsEncoding = string(wencDecoded)
+		}
+	}
+
+	if wordsEncoding != "UTF-8" && wordsEncoding != "UTF-16LE" && wordsEncoding != "UTF-16BE" {
+		wordsEncoding = wordsDefaultEncoding
+	}
+
+	// It's okay for this to not exist/be valid, the real
+	// server will just treat the missing input as a single
+	// non-profane word
+	if wordsValues, ok := form["words"]; ok {
+		wordsDecoded, err := common.Base64DwcEncoding.DecodeString(wordsValues[0])
+		if err == nil {
+			wordsBytes = wordsDecoded
+		}
+	}
+
+	// This field is entirely optional, unsure what
+	// specifically it does. Adds extra data to the
+	// reply, probably used for handling the word
+	// list differently for different regions?
+	if wordsRegionValues, ok := form["wregion"]; ok {
+		wordsRegionDecoded, err := common.Base64DwcEncoding.DecodeString(wordsRegionValues[0])
+		if err == nil {
+			wordsRegion = string(wordsRegionDecoded)
+		}
+	}
+
+	if wordsEncoding == "UTF-8" {
+		words = string(wordsBytes)
+	} else {
+		var utf16String []uint16
+		if wordsEncoding == "UTF-16LE" {
+			for i := 0; i < len(wordsBytes)/2; i++ {
+				utf16String = append(utf16String, binary.LittleEndian.Uint16(wordsBytes[i*2:i*2+2]))
+			}
+		} else {
+			for i := 0; i < len(wordsBytes)/2; i++ {
+				utf16String = append(utf16String, binary.BigEndian.Uint16(wordsBytes[i*2:i*2+2]))
+			}
+		}
+
+		words = string(utf16.Decode(utf16String))
+	}
+
+	// TODO - Handle wtype? Unsure what this field does, seems to always be an emtpy string
+
+	for _, word := range strings.Split(words, "\t") {
 		if isBadWord, _ := IsBadWord(word); isBadWord {
 			prwords += "1"
 		} else {
@@ -398,10 +448,23 @@ func handleProfanity(fields map[string]string) map[string]string {
 		returncd = "000"
 	}
 
-	return map[string]string{
+	reply := map[string]string{
 		"returncd": returncd,
 		"prwords":  prwords,
 	}
+
+	// Only known value of this field that works this way
+	if wordsRegion == "A" {
+		// TODO - The real server seems to handle the input words differently per region? These values are supposed to differ from prwords
+		reply["prwordsA"] = prwords
+		reply["prwordsC"] = prwords
+		reply["prwordsE"] = prwords
+		reply["prwordsJ"] = prwords
+		reply["prwordsK"] = prwords
+		reply["prwordsP"] = prwords
+	}
+
+	return reply
 }
 
 func dlsCount(fields map[string]string) string {
@@ -424,6 +487,6 @@ func isValidRhgamecd(rhgamecd string) bool {
 }
 
 func getDateTime() string {
-	t := time.Now()
+	t := time.Now().UTC()
 	return fmt.Sprintf("%04d%02d%02d%02d%02d%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
 }

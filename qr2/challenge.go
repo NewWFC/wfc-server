@@ -33,7 +33,12 @@ func sendChallenge(conn net.PacketConn, addr net.UDPAddr, session Session, looku
 
 		challenge = common.RandomString(6) + "00" + hexIP + hexPort
 		mutex.Lock()
-		sessions[lookupAddr].Challenge = challenge
+		if sessionPtr := sessions[lookupAddr]; sessionPtr != nil {
+			sessionPtr.Challenge = challenge
+		} else {
+			mutex.Unlock()
+			return
+		}
 		mutex.Unlock()
 	}
 
@@ -49,7 +54,7 @@ func sendChallenge(conn net.PacketConn, addr net.UDPAddr, session Session, looku
 
 			mutex.Lock()
 			session, ok := sessions[lookupAddr]
-			if !ok || session.Authenticated || session.LastKeepAlive < time.Now().Unix()-60 {
+			if !ok || session.Authenticated || session.LastKeepAlive < time.Now().UTC().Unix()-60 {
 				mutex.Unlock()
 				return
 			}

@@ -2,18 +2,19 @@ package qr2
 
 import (
 	"encoding/gob"
-	"fmt"
 	"math/rand"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+
+	//"fmt"
 	"time"
 	"wwfc/common"
 	"wwfc/logging"
 
+	"github.com/linkdata/deadlock"
 	"github.com/logrusorgru/aurora/v3"
-	"github.com/sasha-s/go-deadlock"
 	"gvisor.dev/gvisor/pkg/sleep"
 )
 
@@ -56,6 +57,8 @@ func removeSession(addr uint64) {
 		return
 	}
 
+	logging.Notice("QR2", "session[01] removeSession", aurora.Cyan(session.Addr.String()))
+
 	session.messageAckWaker.Assert()
 
 	if session.groupPointer != nil {
@@ -71,6 +74,32 @@ func removeSession(addr uint64) {
 	delete(sessionBySearchID, sessions[addr].SearchID)
 
 	delete(sessions, addr)
+}
+
+// Remove a session. Expects the global mutex to already be locked.
+func RemoveSessionGroup(addr uint64) {
+
+	session := sessions[addr]
+	if session == nil {
+		return
+	}
+
+	//session.messageAckWaker.Assert()
+
+	if session.groupPointer != nil {
+		session.removeFromGroup()
+	}
+
+	//if session.login != nil {
+	//	session.login.session = nil
+	//	session.login = nil
+	//}
+
+	// Delete search ID lookup
+	//delete(sessionBySearchID, sessions[addr].SearchID)
+
+	//delete(sessions, addr)
+	return
 }
 
 // Remove session from group. Expects the global mutex to already be locked.
@@ -104,6 +133,36 @@ func (session *Session) removeFromGroup() {
 	session.GroupName = ""
 }
 
+// lock mutex first
+func GetSessionFromAddr(addr uint64) (*Session, bool) {
+	session, exists := sessions[addr]
+	if !exists {
+		return nil, false // Return nil and false if not found
+	}
+	return session, true
+}
+
+// lock mutex first
+func getSessionFromAddr(addr uint64) (*Session, bool) {
+	session, exists := sessions[addr]
+	if !exists {
+		return nil, false // Return nil and false if not found
+	}
+	return session, true
+}
+
+// lock mutex first
+func GetSessionFromPid(pid uint32) (*Session, bool) {
+	pidStr := strconv.FormatUint(uint64(pid), 10) // Convert pid to string
+
+	for _, session := range sessions {
+		if session.Data["dwc_pid"] == pidStr {
+			return session, true
+		}
+	}
+	return nil, false
+}
+
 // Update session data, creating the session if it doesn't exist. Returns a copy of the session data.
 func setSessionData(moduleName string, addr net.Addr, sessionId uint32, payload map[string]string) (Session, bool) {
 	newPID, newPIDValid := payload["dwc_pid"]
@@ -127,7 +186,7 @@ func setSessionData(moduleName string, addr net.Addr, sessionId uint32, payload 
 			Addr:            *addr.(*net.UDPAddr),
 			Challenge:       "",
 			Authenticated:   false,
-			LastKeepAlive:   time.Now().Unix(),
+			LastKeepAlive:   time.Now().UTC().Unix(),
 			Endianness:      ClientNoEndian,
 			Data:            payload,
 			PacketCount:     0,
@@ -144,6 +203,7 @@ func setSessionData(moduleName string, addr net.Addr, sessionId uint32, payload 
 
 	if !sessionExists {
 		logging.Info(moduleName, "Creating session", aurora.Cyan(sessionId).String())
+		logging.Notice(moduleName, "session[02] setSessionData create", aurora.Cyan(addr.String()))
 
 		// Set search ID
 		for {
@@ -168,7 +228,7 @@ func setSessionData(moduleName string, addr net.Addr, sessionId uint32, payload 
 	}
 
 	session.Data = payload
-	session.LastKeepAlive = time.Now().Unix()
+	session.LastKeepAlive = time.Now().UTC().Unix()
 	session.SessionID = sessionId
 	return *session, true
 }
@@ -243,30 +303,51 @@ func (session *Session) setProfileID(moduleName string, newPID string, gpcmIP st
 	//trusted PP stuff
 	trustedStr := strconv.FormatBool(loginInfo.Trusted)
 	session.Data["+trusted"] = trustedStr
+	session.Data["+DB"] = strconv.FormatBool(loginInfo.DeluxeBan)    //Deluxe
+	session.Data["+csnum"] = loginInfo.csnum                         //keep private on json
+	session.Data["+TE"] = strconv.FormatInt(loginInfo.BanLenght, 10) //banlenght
 	ctgpvercheck := loginInfo.CTGPVER
-	if ctgpvercheck != "NOTPEDO" && ctgpvercheck != "" {
-		if ctgpvercheck != "1031044" {
-			ctgpstr := loginInfo.CTGPVER
-			ctgp, err := common.Base64DwcEncoding.DecodeString(ctgpstr)
+	if !strings.HasPrefix(loginInfo.GameCode, "AMC") {
 
-			if err != nil {
-				// Handle the error
-				fmt.Println("Error decoding:", err)
-			} else {
-				ctgpstr = string(ctgp)
-				session.Data["+ctgpver"] = string(ctgpstr)
-			}
+		if ctgpvercheck != "NOTPEDO" && ctgpvercheck != "" { //DD
+			/*
+				if ctgpvercheck != "1031044" {
+					ctgpstr := loginInfo.CTGPVER
+					ctgp, err := common.Base64DwcEncoding.DecodeString(ctgpstr)
 
-		} else {
-			session.Data["+ctgpver"] = string(loginInfo.CTGPVER)
+					if err != nil {
+						// Handle the error
+						fmt.Println("Error decoding:", err)
+					} else {
+						ctgpstr = string(ctgp)
+						session.Data["+ctgpver"] = string(ctgpstr)
+					}
+
+				} else {
+					session.Data["+ctgpver"] = string(loginInfo.CTGPVER)
+				}
+			*/
 		}
+	} else {
+		session.Data["+dname"] = loginInfo.CTGPVER
 	}
-
 	//openhost PP stuff
 	OHStr := strconv.FormatBool(loginInfo.OpenHoster)
 	session.Data["+OH"] = OHStr
 
-	session.Data["+name"] = loginInfo.InGameName //PP in game name
+	if session.Data["dwc_pid"] == "602652109" {
+		session.Data["rk"] = string("vs")
+	}
+	//	if _, exists := session.Data["challenge"]; exists {
+	//		// Key exists, you can proceed here
+	//		session.Data["rk"] = "vs" // Your existing code here
+	//}
+
+	//if devname, exists := session.Data["devname"]; exists {
+	//session.Data["+name"] = devname
+	//} else {
+	session.Data["+name"] = loginInfo.InGameName
+	//}
 
 	logging.Notice(moduleName, "Opened session with PID", aurora.Cyan(newPID))
 
@@ -279,10 +360,10 @@ func makeLookupAddr(addr string) uint64 {
 }
 
 // Get a copy of the list of servers
-func GetSessionServers() []map[string]string { //PP look into how to add ingamesn
+func GetSessionServers() []map[string]string {
 	var servers []map[string]string
 	var unreachable []uint64
-	currentTime := time.Now().Unix()
+	currentTime := time.Now().UTC().Unix()
 
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -350,6 +431,8 @@ func loadSessions() error {
 		return err
 	}
 
+	logging.Notice("QR2", "session[03] loadSessions", aurora.Cyan(len(sessions)))
+
 	for _, session := range sessions {
 		if session.SearchID != 0 {
 			sessionBySearchID[session.SearchID] = session
@@ -362,4 +445,38 @@ func loadSessions() error {
 	}
 
 	return nil
+}
+
+func PayloadUserTrusted(profileID uint32) (ok bool) {
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	session, ok := GetSessionFromPid(profileID)
+	if !ok {
+		return false
+	}
+	if session.ExploitReceived == true {
+		return true
+	}
+	session.ExploitReceived = false
+	session.login.NeedsExploit = true
+	go func() {
+		sendClientExploit("qr2/session.go", *session)
+	}()
+	return true
+}
+
+func PayloadUser(profileID uint32) (ok bool) {
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	session, ok := GetSessionFromPid(profileID)
+	if !ok {
+		return false
+	}
+	session.ExploitReceived = false
+	session.login.NeedsExploit = true
+	return true
 }

@@ -25,6 +25,9 @@
     <enableHttpsExploitWii>false</enableHttpsExploitWii>
     <enableHttpsExploitDS>false</enableHttpsExploitDS>
 
+    <!-- The address the payload server will be located at, leave blank to use legacy integrated payload server -->
+    <payloadServerAddress>127.0.0.1:29997</payloadServerAddress>
+
     <!-- Path to the certificate and key used for modern web browser requests -->
     <certPath>fullchain.pem</certPath>
     <keyPath>privkey.pem</keyPath>
@@ -47,7 +50,7 @@
 
     <!-- Database information -->
     <databaseAddress>127.0.0.1</databaseAddress>
-    <databaseName>newwfc</databaseName>
+    <databaseName>wwfc</databaseName>
     
     <!-- Logging configuration -->
     <!-- Log verbosity
@@ -67,5 +70,4 @@
 
     <!-- API secret -->
     <apiSecret>hQ3f57b3tW2WnjJH3v</apiSecret>
-	<TrustedKey>934je4rtgmb3ghm4xcvb</TrustedKey>
 </Config>

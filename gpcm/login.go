@@ -1,14 +1,24 @@
 package gpcm
 
 import (
+	"bufio"
+
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/gob"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"net"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 	"wwfc/common"
@@ -16,15 +26,32 @@ import (
 	"wwfc/logging"
 	"wwfc/qr2"
 
-	//"bytes"
 	"github.com/logrusorgru/aurora/v3"
 )
 
 const (
-	UnitCodeDS       = 0
-	UnitCodeWii      = 1
-	UnitCodeDSAndWii = 0xff
+	UnitCodeDS             = 0
+	UnitCodeWii            = 1
+	UnitCodeDSAndWii       = 0xff
+	asnListFilename        = "ASN.txt"
+	asnExtraFilename       = "ASN_EXTRA.txt"
+	asnISPFilename         = "ASN_ISP.txt"
+	asnConfigFilename      = "ASN.conf"
+	asnIPInfoCacheFilename = "ASN_IPINFO.cache"
+	deluxeBanPublicReason  = "Please disable your VPN/proxy, if you're not using a VPN/proxy, contact support and ask for a whitelist"
 )
+
+type MinimumPayloadVersion struct {
+	major byte
+	minor int
+}
+
+var MinimumPayloadVersions = []MinimumPayloadVersion{
+	{
+		major: 0,
+		minor: 1,
+	},
+}
 
 func generateResponse(gpcmChallenge, nasChallenge, authToken, clientChallenge string) string {
 	hasher := md5.New()
@@ -53,27 +80,44 @@ var msPublicKey = []byte{
 }
 
 var commonDeviceIds = []uint32{
-	0x02000001, // Internal use (leaked)
+	0x02000001, // Internal use
 	0x0403ac68, // Dolphin default
 
 	// Publicly shared key dumps
+	0x02023f0a,
+	0x0204cef9, // From RR
 	0x038c864b,
 	0x040e3f97,
+	0x0411bbe5,
 	0x04cb7515,
 	0x066deb49,
 	0x06bcc32d,
 	0x06d0437a,
+	0x0812f46b,
 	0x089120c8,
+	0x0a305428, // From RR
+	0x0a447b97, // From RR
+	0x0a1e97cf, // From RR
 	0x0e19d5ed,
 	0x0e31482b,
 	0x2428a8cb,
 	0x247dd10b,
 }
+var (
+	ipinfoClient    = &http.Client{Timeout: 5 * time.Second}
+	year3000Unix    = time.Now().Unix() //time.Date(3000, time.January, 1, 2, 0, 0, 0, time.UTC).Unix()
+	ipinfoCache     map[string]ipinfoCacheEntry
+	ipinfoCacheMu   sync.RWMutex
+	ipinfoCacheOnce sync.Once
+)
 
-func verifySignature(moduleName string, authToken string, signature string) uint32 {
+func verifySignature(moduleName string, authToken string, signature string) (defaultKey bool, result uint32) {
+	result = 0
+	defaultKey = false
+
 	sigBytes, err := common.Base64DwcEncoding.DecodeString(signature)
-	if err != nil || len(sigBytes) != 0x144 {
-		return 0
+	if err != nil || (len(sigBytes) != 0x144 && len(sigBytes) != 0x148) {
+		return
 	}
 
 	ngId := sigBytes[0x000:0x004]
@@ -82,7 +126,12 @@ func verifySignature(moduleName string, authToken string, signature string) uint
 		// Skip authentication signature verification for common device IDs (the caller should handle this)
 		for _, defaultDeviceId := range commonDeviceIds {
 			if binary.BigEndian.Uint32(ngId) == defaultDeviceId {
-				return defaultDeviceId
+				if !allowDefaultDolphinKeys {
+					logging.Warn(moduleName, "Using default NG device ID")
+				}
+				result = defaultDeviceId
+				defaultKey = true
+				return
 			}
 		}
 	}
@@ -96,6 +145,10 @@ func verifySignature(moduleName string, authToken string, signature string) uint
 	ngSignature := sigBytes[0x090:0x0CC]
 	apPublicKey := sigBytes[0x0CC:0x108]
 	apSignature := sigBytes[0x108:0x144]
+	apTimestamp := []byte{0, 0, 0, 0}
+	if len(sigBytes) == 0x148 {
+		apTimestamp = sigBytes[0x144:0x148]
+	}
 
 	ngIssuer := fmt.Sprintf("Root-CA%02x%02x%02x%02x-MS%02x%02x%02x%02x", caId[0], caId[1], caId[2], caId[3], msId[0], msId[1], msId[2], msId[3])
 	ngName := fmt.Sprintf("NG%02x%02x%02x%02x", ngId[0], ngId[1], ngId[2], ngId[3])
@@ -112,7 +165,7 @@ func verifySignature(moduleName string, authToken string, signature string) uint
 
 	if !verifyECDSA(msPublicKey, msSignature, ngCertBlobHash[:]) {
 		logging.Error(moduleName, "NG cert verify failed")
-		return 0
+		return
 	}
 	logging.Info(moduleName, "NG cert verified")
 
@@ -124,25 +177,26 @@ func verifySignature(moduleName string, authToken string, signature string) uint
 	apCertBlob = append(apCertBlob, 0x00, 0x00, 0x00, 0x02)
 	apCertBlob = append(apCertBlob, []byte(apName)...)
 	apCertBlob = append(apCertBlob, make([]byte, 0x40-len(apName))...)
-	apCertBlob = append(apCertBlob, 0x00, 0x00, 0x00, 0x00)
+	apCertBlob = append(apCertBlob, apTimestamp...)
 	apCertBlob = append(apCertBlob, apPublicKey...)
 	apCertBlob = append(apCertBlob, make([]byte, 0x3C)...)
 	apCertBlobHash := sha1.Sum(apCertBlob)
 
 	if !verifyECDSA(ngPublicKey, ngSignature, apCertBlobHash[:]) {
 		logging.Error(moduleName, "AP cert verify failed")
-		return 0
+		return
 	}
 	logging.Info(moduleName, "AP cert verified")
 
 	authTokenHash := sha1.Sum([]byte(authToken))
 	if !verifyECDSA(apPublicKey, apSignature, authTokenHash[:]) {
 		logging.Error(moduleName, "Auth token signature failed")
-		return 0
+		return
 	}
 	logging.Notice(moduleName, "Auth token signature verified; NG ID:", aurora.Cyan(fmt.Sprintf("%08x", ngId)))
 
-	return binary.BigEndian.Uint32(ngId)
+	result = binary.BigEndian.Uint32(ngId)
+	return
 }
 
 func (g *GameSpySession) login(command common.GameSpyCommand) {
@@ -158,13 +212,13 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 		return
 	}
 
-	gamecd, issueTime, userId, gsbrcd, cfc, region, lang, ingamesn, challenge, unitcd, isLocalhost, ctgpver, err := common.UnmarshalNASAuthToken(authToken)
+	gamecd, issueTime, userId, gsbrcd, cfc, region, lang, ingamesn, challenge, unitcd, isLocalhost, err := common.UnmarshalNASAuthToken(authToken)
 	if err != nil {
 		g.replyError(ErrLogin)
 		return
 	}
 
-	currentTime := time.Now()
+	currentTime := time.Now().UTC()
 	if issueTime.Before(currentTime.Add(-10*time.Minute)) || issueTime.After(currentTime) {
 		g.replyError(ErrLoginLoginTicketExpired)
 		return
@@ -178,15 +232,38 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.ConsoleFriendCode = cfc
 	g.InGameName = ingamesn
 	g.UnitCode = unitcd
-	//ctgpver = bytes.Trim(ctgpver, "\x00")
-	//g.User.CTGPVER = string(ctgpver)
-	_, payloadVerExists := command.OtherValues["payload_ver"]
-	_, signatureExists := command.OtherValues["wwfc_sig"]
-	//_, IsCTGP := command.OtherValues["_ctgpver"] //check for CTGP
+	var payloadVerExists bool
+	if command.OtherValues["wwfc_ver"] != "" {
+		_, payloadVerExists = command.OtherValues["wwfc_ver"]
+	} else {
+		_, payloadVerExists = command.OtherValues["wl:ver"]
+	}
+	logging.Notice("PayloadVerExists: " + strconv.FormatBool(payloadVerExists))
+	_, signatureExists := command.OtherValues["wl:sig"]
+	logging.Notice("signatureExists: " + strconv.FormatBool(signatureExists))
+	deviceId := uint32(0)
+	g.csnum = ""
 
-	deviceId := uint32(0) //PP
+	//if csnum, exists := command.OtherValues["wwfc_csnum"]; exists {
+	if wsn, exists := command.OtherValues["wsn"]; exists {
+		csnum, err := common.Base64DwcEncoding.DecodeString(wsn)
+		if err != nil {
+			logging.Error("Bad WSN conversion for PID: " + strconv.FormatUint(uint64(g.User.ProfileId), 10))
+			g.replyError(ErrLoginBadPreAuth)
+			return
+		}
+		g.csnum = strings.TrimRight(string(csnum), "\x00")
+		if len(g.csnum) > 16 { // Picked a random length. Serial numbers appear to be anywhere from 9-12?
+			logging.Error("invalid csnum for PID: " + strconv.FormatUint(uint64(g.User.ProfileId), 10))
+			g.replyError(ErrLoginBadPreAuth)
+			return
+		}
+	}
 
-	if hostPlatform, exists := command.OtherValues["wwfc_host"]; exists {
+	if command.OtherValues["wwfc_host"] != "" {
+		command.OtherValues["wl:host"] = command.OtherValues["wwfc_host"]
+	}
+	if hostPlatform, exists := command.OtherValues["wl:host"]; exists {
 		g.HostPlatform = hostPlatform
 	} else {
 		if g.UnitCode == UnitCodeDS {
@@ -206,8 +283,9 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	}
 
 	deviceAuth := false
+	defaultKey := false
 	if g.UnitCode == UnitCodeWii {
-		if isLocalhost && !payloadVerExists && !signatureExists { //&& !IsCTGP {
+		if isLocalhost && !payloadVerExists { // && !payloadVerExists && !signatureExists {
 			// Players using the DNS, need patching using a QR2 exploit
 			if !common.DoesGameNeedExploit(g.GameName) {
 				logging.Error(g.ModuleName, "Using DNS for incompatible game:", aurora.Cyan(g.GameName))
@@ -222,9 +300,9 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			g.NeedsExploit = true
 			deviceAuth = false
 		} else {
-			//deviceId = g.verifyExLoginInfo(command, authToken)
+			//defaultKey, deviceId = g.verifyExLoginInfo(command, authToken)
 			if deviceId == 0 {
-				deviceAuth = true //return
+				deviceAuth = true //	return
 			}
 			deviceAuth = true
 		}
@@ -261,7 +339,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 		cmdProfileId = uint32(cmdProfileId2)
 	}
 
-	if !g.performLoginWithDatabase(userId, gsbrcd, cmdProfileId, deviceId) {
+	if !g.performLoginWithDatabase(userId, gsbrcd, cmdProfileId, defaultKey, deviceId, deviceAuth) {
 		return
 	}
 
@@ -269,11 +347,10 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.ModuleName += "/" + common.CalcFriendCodeString(g.User.ProfileId, g.User.GsbrCode[:4]) + "*"
 
 	// Check to see if a session is already open with this profile ID
-	mutex.Lock() //PP take a look for openhost
+	mutex.Lock()
 	otherSession, exists := sessions[g.User.ProfileId]
 	if exists {
 		otherSession.replyError(ErrForcedDisconnect)
-		common.CloseConnection(ServerName, otherSession.ConnIndex)
 
 		for i := 0; ; i++ {
 			mutex.Unlock()
@@ -304,9 +381,50 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 	g.LoggedIn = true
 	g.ModuleName = "GPCM:" + strconv.FormatInt(int64(g.User.ProfileId), 10)
 	g.ModuleName += "/" + common.CalcFriendCodeString(g.User.ProfileId, g.User.GsbrCode[:4])
+	ctgpver := "NOTPEDO" //DD
+	// Notify QR2 of the login
 
-	// Notify QR2 of the login //PP
-	qr2.Login(g.User.ProfileId, gamecd, ingamesn, cfc, g.User.GsbrCode[:4], g.RemoteAddr, g.NeedsExploit, g.DeviceAuthenticated, g.User.Restricted, g.User.Trusted, g.User.OpenHost, ctgpver)
+	banvpn, err := database.DoesUserVPNWhitelist(pool, ctx, g.User.ProfileId)
+
+	if err != nil {
+		logging.Error(g.ModuleName, "Error checking VPN whitelist:", err)
+	}
+
+	if g.csnum != "" { //ignore if csnum is blank for other distros, but would deny matchmaking if not present for deluxe in DXWW
+		ok, whitelisted, err := database.Checkcsnum(pool, ctx, g.User.ProfileId, g.csnum)
+		if err != nil {
+			logging.Notice("DB error with csnum for PID: " + strconv.FormatUint(uint64(g.User.ProfileId), 10))
+			g.replyError(ErrLoginBadPreAuth)
+			return
+		}
+		if !ok && !whitelisted {
+			g.csnum = "0"
+			//g.replyError(ErrLoginBadPreAuth)
+			//return
+		}
+
+		//ok, err := database.Checkcsnumban(pool, ctx, g.User.ProfileId, g.csnum)
+	}
+
+	g.User.DeluxeBan = false
+	g.User.BanLenght = int64(0)
+	g.User.Public_reason = ""
+	g.User.DeluxeBan, g.User.BanLenght, g.User.Public_reason, err = database.DoesUserDeluxeBanCheck(pool, ctx, g.User.ProfileId, g.RemoteAddr, g.csnum)
+	if err != nil {
+		g.replyError(ErrLoginBadPreAuth)
+		return
+	}
+
+	if !banvpn && !g.User.DeluxeBan {
+		config := common.GetConfig()
+		g.applyASNDeluxeBan(config.IpinfoToken)
+		if g.User.DeluxeBan {
+			logging.Warn(g.ModuleName, "Deluxe ban applied due to ASN/VPN blocklist for user ", aurora.Red(g.User.ProfileId), " ", aurora.Red(ingamesn))
+		}
+	}
+
+	qr2.Login(g.User.ProfileId, gamecd, ingamesn, cfc, g.User.GsbrCode[:4], g.RemoteAddr, g.NeedsExploit, g.DeviceAuthenticated, g.User.Restricted, g.User.Trusted, g.User.OpenHost, ctgpver, g.User.DeluxeBan, g.User.BanLenght, g.csnum) //Deluxeban
+	//qr2.Login(g.User.ProfileId, gamecd, ingamesn, cfc, g.User.GsbrCode[:4], g.RemoteAddr, g.NeedsExploit, g.DeviceAuthenticated, g.User.Restricted)
 
 	replyUserId := g.User.UserId
 	if g.UnitCode == UnitCodeDS {
@@ -331,6 +449,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			motdUTF16 := utf16.Encode([]rune(motd))
 			motdByteArray := common.UTF16ToByteArray(motdUTF16)
 			otherValues["wwfc_motd"] = common.Base64DwcEncoding.EncodeToString(motdByteArray)
+			//otherValues["wl:motd"] = common.Base64DwcEncoding.EncodeToString(motdByteArray)
 		}
 	}
 
@@ -349,12 +468,12 @@ func (g *GameSpySession) exLogin(command common.GameSpyCommand) {
 		return
 	}
 
-	deviceId := g.verifyExLoginInfo(command, g.AuthToken)
+	defaultKey, deviceId := g.verifyExLoginInfo(command, g.AuthToken)
 	if deviceId == 0 {
 		return
 	}
 
-	if !g.performLoginWithDatabase(g.User.UserId, g.User.GsbrCode, 0, deviceId) {
+	if !g.performLoginWithDatabase(g.User.UserId, g.User.GsbrCode, 0, defaultKey, deviceId, true) {
 		return
 	}
 
@@ -362,84 +481,78 @@ func (g *GameSpySession) exLogin(command common.GameSpyCommand) {
 	qr2.SetDeviceAuthenticated(g.User.ProfileId)
 }
 
-func (g *GameSpySession) verifyExLoginInfo(command common.GameSpyCommand, authToken string) uint32 {
+func checkPayloadVersion(payloadVer string) bool {
+	verInt, err := strconv.ParseInt(payloadVer, 0, 32)
+	if err != nil {
+		return false
+	}
+
+	major := byte(verInt>>24) & 255
+	minor := int(verInt>>12) & 4095
+	// beta := verInt & 4095
+
+	for _, v := range MinimumPayloadVersions {
+		if v.major == major && minor >= v.minor {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *GameSpySession) verifyExLoginInfo(command common.GameSpyCommand, authToken string) (defaultKey bool, deviceId uint32) {
 	payloadVer, payloadVerExists := command.OtherValues["payload_ver"]
 	signature, signatureExists := command.OtherValues["wwfc_sig"]
-	deviceId := uint32(0) //PP
+	defaultKey = false
+	deviceId = 0
 
-	if !payloadVerExists || payloadVer != "4" {
+	if !payloadVerExists || payloadVer != "4" { //!checkPayloadVersion(payloadVer) {
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "The payload version is invalid.",
-			Fatal:       false,
+			Fatal:       true,
 			WWFCMessage: WWFCMsgPayloadInvalid,
 		})
-		return 0
+		return
 	}
 
 	if !signatureExists {
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "Missing authentication signature.",
-			Fatal:       false,
+			Fatal:       true,
 			WWFCMessage: WWFCMsgUnknownLoginError,
 		})
-		return 0
+		return
 	}
 
-	if deviceId = verifySignature(g.ModuleName, authToken, signature); deviceId == 0 {
+	defaultKey, deviceId = verifySignature(g.ModuleName, authToken, signature)
+	if deviceId == 0 {
 		g.replyError(GPError{
 			ErrorCode:   ErrLogin.ErrorCode,
 			ErrorString: "The authentication signature is invalid.",
-			Fatal:       false,
+			Fatal:       true,
 			WWFCMessage: WWFCMsgUnknownLoginError,
 		})
-		return 0
+		return
 	}
 
 	g.DeviceId = deviceId
-
-	if !allowDefaultDolphinKeys {
-		// Check common device IDs
-		for _, defaultDeviceId := range commonDeviceIds {
-			if deviceId != defaultDeviceId {
-				continue
-			}
-
-			if strings.HasPrefix(g.HostPlatform, "Dolphin") {
-				g.replyError(GPError{
-					ErrorCode:   ErrLogin.ErrorCode,
-					ErrorString: "Prohibited device ID used in signature.",
-					Fatal:       true,
-					WWFCMessage: WWFCMsgDolphinSetupRequired,
-				})
-			} else {
-				g.replyError(GPError{
-					ErrorCode:   ErrLogin.ErrorCode,
-					ErrorString: "Prohibited device ID used in signature.",
-					Fatal:       true,
-					WWFCMessage: WWFCMsgUnknownLoginError,
-				})
-			}
-
-			return 0
-		}
-	}
-
-	return deviceId
+	return
 }
 
-func (g *GameSpySession) performLoginWithDatabase(userId uint64, gsbrCode string, profileId uint32, deviceId uint32) bool {
+func (g *GameSpySession) performLoginWithDatabase(userId uint64, gsbrCode string, profileId uint32, defaultKey bool, deviceId uint32, deviceAuth bool) bool {
 	// Get IP address without port
 	ipAddress := g.RemoteAddr
 	if strings.Contains(ipAddress, ":") {
 		ipAddress = ipAddress[:strings.Index(ipAddress, ":")]
 	}
 
-	user, err := database.LoginUserToGPCM(pool, ctx, userId, gsbrCode, profileId, deviceId, ipAddress, g.InGameName)
+	user, err := database.LoginUserToGPCM(pool, ctx, userId, gsbrCode, profileId, defaultKey, deviceId, ipAddress, g.InGameName, deviceAuth)
 	g.User = user
 
 	if err != nil {
+		logging.Error(g.ModuleName, "DB error:", err)
+
 		if err == database.ErrProfileIDInUse {
 			g.replyError(GPError{
 				ErrorCode:   ErrLogin.ErrorCode,
@@ -470,12 +583,29 @@ func (g *GameSpySession) performLoginWithDatabase(userId uint64, gsbrCode string
 					WWFCMessage: WWFCMsgConsoleMismatch,
 				})
 			}
+		} else if err == database.ErrProhibitedDeviceID {
+			if strings.HasPrefix(g.HostPlatform, "Dolphin") {
+				g.replyError(GPError{
+					ErrorCode:   ErrLogin.ErrorCode,
+					ErrorString: "Prohibited device ID used in signature.",
+					Fatal:       true,
+					WWFCMessage: WWFCMsgDolphinSetupRequired,
+				})
+			} else {
+				g.replyError(GPError{
+					ErrorCode:   ErrLogin.ErrorCode,
+					ErrorString: "Prohibited device ID used in signature.",
+					Fatal:       true,
+					WWFCMessage: WWFCMsgUnknownLoginError,
+				})
+			}
 		} else if err == database.ErrProfileBannedTOS {
 			g.replyError(GPError{
 				ErrorCode:   ErrLogin.ErrorCode,
-				ErrorString: "The profile is banned from the service.",
+				ErrorString: "The profile is banned from the service. Reason: " + user.BanReason,
 				Fatal:       true,
 				WWFCMessage: WWFCMsgProfileBannedTOS,
+				Reason:      user.BanReason,
 			})
 		} else {
 			g.replyError(GPError{
@@ -498,4 +628,273 @@ func IsLoggedIn(profileID uint32) bool {
 
 	session, exists := sessions[profileID]
 	return exists && session.LoggedIn
+}
+
+type ipinfoCacheEntry struct {
+	IsAnonymous bool
+	IsHosting   bool
+	IsAnycast   bool
+}
+
+func (entry ipinfoCacheEntry) isSuspicious() bool {
+	return entry.IsAnonymous || entry.IsHosting || entry.IsAnycast
+}
+
+type ipinfoLookupResponse struct {
+	IP  string `json:"ip"`
+	Org string `json:"org"`
+	ASN string `json:"asn"`
+	Geo struct {
+		City          string  `json:"city"`
+		Region        string  `json:"region"`
+		RegionCode    string  `json:"region_code"`
+		Country       string  `json:"country"`
+		CountryCode   string  `json:"country_code"`
+		Continent     string  `json:"continent"`
+		ContinentCode string  `json:"continent_code"`
+		Latitude      float64 `json:"latitude"`
+		Longitude     float64 `json:"longitude"`
+		Timezone      string  `json:"timezone"`
+		PostalCode    string  `json:"postal_code"`
+	} `json:"geo"`
+	AS struct {
+		ASN    string `json:"asn"`
+		Name   string `json:"name"`
+		Domain string `json:"domain"`
+		Type   string `json:"type"`
+	} `json:"as"`
+	IsAnonymous *bool `json:"is_anonymous"`
+	IsHosting   *bool `json:"is_hosting"`
+	IsAnycast   *bool `json:"is_anycast"`
+	IsMobile    *bool `json:"is_mobile"`
+	IsSatellite *bool `json:"is_satellite"`
+}
+
+func (r ipinfoLookupResponse) toCacheEntry() (ipinfoCacheEntry, bool) {
+	entry := ipinfoCacheEntry{
+		IsAnonymous: boolValue(r.IsAnonymous),
+		IsHosting:   boolValue(r.IsHosting),
+		IsAnycast:   boolValue(r.IsAnycast),
+	}
+	hasFlags := r.IsAnonymous != nil || r.IsHosting != nil || r.IsAnycast != nil
+	return entry, hasFlags
+}
+
+func (g *GameSpySession) applyASNDeluxeBan(token string) {
+	if token == "" {
+		return
+	}
+	ip := stripPort(g.RemoteAddr)
+	if ip == "" {
+		logging.Warn(g.ModuleName, "Unable to determine IP address for ASN check")
+		return
+	}
+	if parsed := net.ParseIP(ip); parsed == nil {
+		logging.Warn(g.ModuleName, "Invalid IP address for ASN check:", ip)
+		return
+	}
+	if entry, ok := getCachedIPInfo(ip); ok {
+		if entry.isSuspicious() {
+			g.markDeluxeBan()
+			logging.Warn(g.ModuleName, "Automatic deluxe ban applied from cache", aurora.Red(ip))
+		}
+		return
+	}
+	asn, entry, hasFlags, err := fetchASNAndFlagsFromIPInfo(ip, token)
+	if err != nil {
+		logging.Warn(g.ModuleName, "IPInfo lookup failed:", err)
+		return
+	}
+	if hasFlags {
+		cacheIPInfoFlags(ip, entry)
+		if entry.isSuspicious() {
+			g.markDeluxeBan()
+			logging.Warn(g.ModuleName, "Automatic deluxe ban applied from IPInfo flags", aurora.Red(ip))
+		}
+		return
+	}
+	if asn == "" {
+		return
+	}
+	bl, err := loadASNBlocklist()
+	if err != nil {
+		logging.Error(g.ModuleName, "Failed to load ASN blocklist:", err)
+		return
+	}
+	if _, blocked := bl[asn]; blocked {
+		g.markDeluxeBan()
+		logging.Warn(g.ModuleName, "Automatic deluxe ban applied for ASN", aurora.Red(asn))
+	}
+}
+
+func (g *GameSpySession) markDeluxeBan() {
+	g.User.DeluxeBan = true
+	g.User.BanLenght = year3000Unix
+	g.User.Public_reason = deluxeBanPublicReason
+}
+
+func fetchASNAndFlagsFromIPInfo(ip, token string) (string, ipinfoCacheEntry, bool, error) {
+	url := fmt.Sprintf("https://api.ipinfo.io/lookup/%s?token=%s", ip, token)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", ipinfoCacheEntry{}, false, err
+	}
+	resp, err := ipinfoClient.Do(req)
+	if err != nil {
+		return "", ipinfoCacheEntry{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", ipinfoCacheEntry{}, false, fmt.Errorf("ipinfo responded with status %s", resp.Status)
+	}
+	var data ipinfoLookupResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", ipinfoCacheEntry{}, false, err
+	}
+	asn := strings.ToUpper(strings.TrimSpace(data.ASN))
+	if asn == "" {
+		asn = strings.ToUpper(strings.TrimSpace(data.AS.ASN))
+	}
+	if asn == "" {
+		fields := strings.Fields(data.Org)
+		if len(fields) > 0 {
+			asn = strings.ToUpper(fields[0])
+		}
+	}
+	entry, hasFlags := data.toCacheEntry()
+	return asn, entry, hasFlags, nil
+}
+
+func loadASNBlocklist() (map[string]struct{}, error) {
+	m := make(map[string]struct{})
+	files := []string{asnListFilename, asnExtraFilename}
+	if shouldIncludeISPASN() {
+		files = append(files, asnISPFilename)
+	}
+	for _, filename := range files {
+		if err := loadASNFileInto(m, filename); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+func stripPort(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	if idx := strings.LastIndex(remoteAddr, ":"); idx > 0 {
+		return remoteAddr[:idx]
+	}
+	return remoteAddr
+}
+
+func loadASNFileInto(m map[string]struct{}, filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		asn := strings.ToUpper(fields[0])
+		if !strings.HasPrefix(asn, "AS") {
+			continue
+		}
+		m[asn] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func shouldIncludeISPASN() bool {
+	file, err := os.Open(asnConfigFilename)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if lower == "true" || lower == "1" || lower == "yes" {
+			return true
+		}
+		if strings.Contains(lower, "=") {
+			parts := strings.SplitN(lower, "=", 2)
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if key == "enable_isp_block" || key == "block_isp" || key == "block_asn_isp" || key == "isp" {
+				if value == "true" || value == "1" || value == "yes" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func ensureIPInfoCacheLoaded() {
+	ipinfoCacheOnce.Do(func() {
+		ipinfoCache = make(map[string]ipinfoCacheEntry)
+		file, err := os.Open(asnIPInfoCacheFilename)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				logging.Warn("GPCM", "failed to open IPInfo cache:", err)
+			}
+			return
+		}
+		defer file.Close()
+		if err := gob.NewDecoder(file).Decode(&ipinfoCache); err != nil && err != io.EOF {
+			logging.Warn("GPCM", "failed to decode IPInfo cache:", err)
+			ipinfoCache = make(map[string]ipinfoCacheEntry)
+		}
+	})
+}
+
+func getCachedIPInfo(ip string) (ipinfoCacheEntry, bool) {
+	ensureIPInfoCacheLoaded()
+	ipinfoCacheMu.RLock()
+	entry, ok := ipinfoCache[ip]
+	ipinfoCacheMu.RUnlock()
+	return entry, ok
+}
+
+func cacheIPInfoFlags(ip string, entry ipinfoCacheEntry) {
+	ensureIPInfoCacheLoaded()
+	ipinfoCacheMu.Lock()
+	defer ipinfoCacheMu.Unlock()
+	ipinfoCache[ip] = entry
+	if err := saveIPInfoCacheLocked(); err != nil {
+		logging.Warn("GPCM", "failed to persist IPInfo cache:", err)
+	}
+}
+
+func saveIPInfoCacheLocked() error {
+	file, err := os.Create(asnIPInfoCacheFilename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return gob.NewEncoder(file).Encode(ipinfoCache)
+}
+
+func boolValue(flag *bool) bool {
+	return flag != nil && *flag
 }

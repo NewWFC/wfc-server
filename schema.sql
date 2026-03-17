@@ -2,8 +2,8 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.14 (Debian 13.14-0+deb11u1)
--- Dumped by pg_dump version 13.14 (Debian 13.14-0+deb11u1)
+-- Dumped from database version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+-- Dumped by pg_dump version 14.9 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -21,44 +21,10 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- Name: trusted; Type: TABLE; Schema: public; Owner: newwfc
+-- Name: users; Type: TABLE; Schema: public; Owner: wiilink
 --
 
-CREATE TABLE public.trusted (
-    id integer NOT NULL,
-    profile_id bigint
-);
-
-
-ALTER TABLE public.trusted OWNER TO newwfc;
-
---
--- Name: trusted_id_seq; Type: SEQUENCE; Schema: public; Owner: newwfc
---
-
-CREATE SEQUENCE public.trusted_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER TABLE public.trusted_id_seq OWNER TO newwfc;
-
---
--- Name: trusted_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: newwfc
---
-
-ALTER SEQUENCE public.trusted_id_seq OWNED BY public.trusted.id;
-
-
---
--- Name: users; Type: TABLE; Schema: public; Owner: newwfc
---
-
-CREATE TABLE public.users (
+CREATE TABLE IF NOT EXISTS public.users (
     profile_id bigint NOT NULL,
     user_id bigint NOT NULL,
     gsbrcd character varying NOT NULL,
@@ -68,86 +34,105 @@ CREATE TABLE public.users (
     unique_nick character varying NOT NULL,
     firstname character varying,
     lastname character varying DEFAULT ''::character varying,
-    mariokartwii_friend_info character varying,
-    last_ip_address character varying DEFAULT ''::character varying,
-    last_ingamesn character varying DEFAULT ''::character varying,
-    has_ban boolean DEFAULT false,
-    ban_issued timestamp without time zone,
-    ban_expires timestamp without time zone,
-    ban_reason character varying,
-    ban_reason_hidden character varying,
-    ban_moderator character varying,
-    ban_tos boolean,
-    open_host boolean DEFAULT false
+    mariokartwii_friend_info character varying
 );
 
 
-ALTER TABLE public.users OWNER TO newwfc;
+ALTER TABLE ONLY public.users
+    ADD IF NOT EXISTS last_ip_address character varying DEFAULT ''::character varying,
+    ADD IF NOT EXISTS last_ingamesn character varying DEFAULT ''::character varying,
+    ADD IF NOT EXISTS has_ban boolean DEFAULT false,
+    ADD IF NOT EXISTS ban_issued timestamp without time zone,
+    ADD IF NOT EXISTS ban_expires timestamp without time zone,
+    ADD IF NOT EXISTS ban_reason character varying,
+    ADD IF NOT EXISTS ban_reason_hidden character varying,
+    ADD IF NOT EXISTS ban_moderator character varying,
+    ADD IF NOT EXISTS ban_tos boolean,
+	ADD IF NOT EXISTS open_host boolean DEFAULT false;
 
 --
--- Name: users_profile_id_seq; Type: SEQUENCE; Schema: public; Owner: newwfc
+-- Change ng_device_id from bigint to bigint[]
+--
+DO $$ 
+BEGIN
+    IF (SELECT data_type FROM information_schema.columns WHERE table_name='users' AND column_name='ng_device_id') != 'ARRAY' THEN
+        ALTER TABLE public.users
+            ALTER COLUMN ng_device_id TYPE bigint[] using array[ng_device_id];
+    END IF;
+END $$;
+
+ALTER TABLE public.users OWNER TO wiilink;
+
+--
+-- Name: mario_kart_wii_sake; Type: TABLE; Schema: public; Owner: wiilink
 --
 
-CREATE SEQUENCE public.users_profile_id_seq
+CREATE TABLE IF NOT EXISTS public.mario_kart_wii_sake (
+    regionid smallint NOT NULL CHECK (regionid >= 1 AND regionid <= 7),
+    courseid smallint NOT NULL CHECK (courseid >= 0 AND courseid <= 32767),
+    score integer NOT NULL CHECK (score > 0 AND score < 360000),
+    pid integer NOT NULL CHECK (pid > 0),
+    playerinfo varchar(108) NOT NULL CHECK (LENGTH(playerinfo) = 108),
+    ghost bytea CHECK (ghost IS NULL OR (OCTET_LENGTH(ghost) BETWEEN 148 AND 10240)),
+
+    CONSTRAINT one_time_per_course_constraint UNIQUE (courseid, pid)
+);
+
+
+ALTER TABLE ONLY public.mario_kart_wii_sake
+    ADD IF NOT EXISTS id serial PRIMARY KEY,
+    ADD IF NOT EXISTS upload_time timestamp without time zone;
+
+
+ALTER TABLE public.mario_kart_wii_sake OWNER TO wiilink;
+
+--
+-- Name: gamestats_public_data; Type: TABLE; Schema: public; Owner: wiilink
+--
+
+CREATE TABLE IF NOT EXISTS public.gamestats_public_data (
+    profile_id bigint NOT NULL,
+    dindex character varying NOT NULL,
+    ptype character varying NOT NULL,
+    pdata character varying NOT NULL,
+    modified_time timestamp without time zone NOT NULL,
+
+    CONSTRAINT one_pdata_constraint UNIQUE (profile_id, dindex, ptype)
+);
+
+--
+-- Name: users_profile_id_seq; Type: SEQUENCE; Schema: public; Owner: wiilink
+--
+
+CREATE SEQUENCE IF NOT EXISTS public.users_profile_id_seq
     AS integer
-    START WITH 1
+    START WITH 1000000000
     INCREMENT BY 1
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
 
 
-ALTER TABLE public.users_profile_id_seq OWNER TO newwfc;
+ALTER TABLE public.users_profile_id_seq OWNER TO wiilink;
 
 --
--- Name: users_profile_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: newwfc
+-- Name: users_profile_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: wiilink
 --
 
 ALTER SEQUENCE public.users_profile_id_seq OWNED BY public.users.profile_id;
 
-
 --
--- Name: trusted id; Type: DEFAULT; Schema: public; Owner: newwfc
---
-
-ALTER TABLE ONLY public.trusted ALTER COLUMN id SET DEFAULT nextval('public.trusted_id_seq'::regclass);
-
-
---
--- Name: users profile_id; Type: DEFAULT; Schema: public; Owner: newwfc
+-- Name: users profile_id; Type: DEFAULT; Schema: public; Owner: wiilink
 --
 
 ALTER TABLE ONLY public.users ALTER COLUMN profile_id SET DEFAULT nextval('public.users_profile_id_seq'::regclass);
 
-
 --
--- Name: trusted trusted_pkey; Type: CONSTRAINT; Schema: public; Owner: newwfc
---
-
-ALTER TABLE ONLY public.trusted
-    ADD CONSTRAINT trusted_pkey PRIMARY KEY (id);
-
-
---
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: newwfc
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: wiilink
 --
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (profile_id);
-
-
---
--- Name: TABLE trusted; Type: ACL; Schema: public; Owner: newwfc
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.trusted TO newwfc;
-
-
---
--- Name: SEQUENCE trusted_id_seq; Type: ACL; Schema: public; Owner: newwfc
---
-
-GRANT ALL ON SEQUENCE public.trusted_id_seq TO newwfc;
 
 
 --

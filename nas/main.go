@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,14 +17,16 @@ import (
 	"wwfc/gamestats"
 	"wwfc/logging"
 	"wwfc/nhttp"
+	"wwfc/race"
 	"wwfc/sake"
 
 	"github.com/logrusorgru/aurora/v3"
 )
 
 var (
-	serverName string
-	server     *nhttp.Server
+	serverName           string
+	server               *nhttp.Server
+	payloadServerAddress string
 )
 
 func StartServer(reload bool) {
@@ -33,6 +36,8 @@ func StartServer(reload bool) {
 	serverName = config.ServerName
 
 	address := *config.NASAddress + ":" + config.NASPort
+
+	payloadServerAddress = config.PayloadServerAddress
 
 	if config.EnableHTTPS {
 		go startHTTPSProxy(config)
@@ -74,6 +79,7 @@ func Shutdown() {
 	}
 }
 
+var regexRaceHost = regexp.MustCompile(`^([a-z\-]+\.)?race\.gs\.`)
 var regexSakeHost = regexp.MustCompile(`^([a-z\-]+\.)?sake\.gs\.`)
 var regexGamestatsHost = regexp.MustCompile(`^([a-z\-]+\.)?gamestats2?\.gs\.`)
 var regexStage1URL = regexp.MustCompile(`^/w([0-9])$`)
@@ -90,6 +96,13 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	if regexGamestatsHost.MatchString(r.Host) {
 		// Redirect to the gamestats server
 		gamestats.HandleWebRequest(w, r)
+		return
+	}
+
+	// Check for *.race.gs.* or race.gs.*
+	if regexRaceHost.MatchString(r.Host) {
+		// Redirect to the race server
+		race.HandleRequest(w, r)
 		return
 	}
 
@@ -116,7 +129,12 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Check for /payload
 	if strings.HasPrefix(r.URL.String(), "/payload") {
 		logging.Info("NAS", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
-		handlePayloadRequest(moduleName, w, r)
+		if payloadServerAddress != "" {
+			// Forward the request to the payload server
+			forwardPayloadRequest(moduleName, w, r)
+		} else {
+			handlePayloadRequest(moduleName, w, r)
+		}
 		return
 	}
 
@@ -137,9 +155,17 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		api.HandleGroups(w, r)
 		return
 	}
+
 	// Check for /api/json
 	if r.URL.Path == "/api/json" || r.URL.Path == "/json" {
 		api.HandleJson(w, r)
+		return
+	}
+
+	//HandleGPCMFetch
+	// Check for HandleGPCMFetch
+	if r.URL.Path == "/api/jsonADMIN" || r.URL.Path == "/jsonADMIN" {
+		api.HandleGPCMFetch(w, r)
 		return
 	}
 
@@ -155,6 +181,16 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/api/delban" {
+		api.HandleBanDel(w, r)
+		return
+	}
+
+	if r.URL.Path == "/api/delunban" {
+		api.HandleUnBanDel(w, r)
+		return
+	}
+
 	// Check for /api/unban
 	if r.URL.Path == "/api/unban" {
 		api.HandleUnban(w, r)
@@ -167,26 +203,28 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/api/vpnwhitelist" {
+		api.HandleVPNFetch(w, r)
+		return
+	}
+
+	if r.URL.Path == "/api/csnum" {
+		api.HandlecsnumFetch(w, r)
+		return
+	}
+
 	if r.URL.Path == "/api/trusted" {
 		api.HandleFetch(w, r)
 		return
 	}
-	// Check for /api/stats
-	if r.URL.Path == "/lecolecode" {
-		VER := string("wiimmfi")
-		HandlePatches(w, r, VER)
+
+	if r.URL.Path == "/api/test" {
+		api.HandleTest(w, r)
 		return
 	}
 
-	if r.URL.Path == "/CTGPlecode" {
-		VER := string("CTGP")
-		HandlePatches(w, r, VER)
-		return
-	}
-
-	if r.URL.String() == "/ca" || r.URL.String() == "/pe" || r.URL.String() == "/pp" || r.URL.String() == "/pj" || r.URL.String() == "/pk" || r.URL.String() == "/gg" || r.URL.String() == "/ce" || r.URL.String() == "/cp" {
-		Payload := string(r.URL.String())
-		handlePayloadDownload(w, r, Payload)
+	if r.URL.Path == "/tt" {
+		api.HandleTimeTrials(w, r)
 		return
 	}
 
@@ -198,6 +236,20 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") //mainly for rooms_mapping.txt
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		// **Force correct MIME type**
+		//something about APPLE
+		if strings.HasSuffix(filePath, ".ipa") {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		} else if strings.HasSuffix(filePath, ".plist") {
+			w.Header().Set("Content-Type", "text/xml")
+		} else if strings.HasSuffix(filePath, "md5.min.js") {
+			w.Header().Set("Content-Type", "application/javascript")
+		}
+		// else {
+		//	// Use default behavior for other file types
+		//	w.Header().Set("Content-Type", http.DetectContentType([]byte(filePath)))
+		//}
+
 		// Checking if the requested file exists
 		if _, err := os.Stat(filePath); err != nil {
 			// If os.Stat returns an error, log the error or handle it as needed
@@ -264,98 +316,38 @@ func handleNASTest(w http.ResponseWriter) {
 	w.Write([]byte(response))
 }
 
-func HandlePatches(w http.ResponseWriter, r *http.Request, VER string) {
-	region := r.Header.Get("X-Wiimmfi-Region")
-	if strings.HasPrefix(VER, "CTGP") {
-		region := r.Header.Get("X-Wiimmfi-Region") //region := string("PAL") //
-		if region != "" {
-			fileName := fmt.Sprintf("./wiimmfipayload/wiimmfipatches_%s.bin", region)
-			file, err := os.Open(fileName)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("No matching file for region: %s", region), http.StatusExpectationFailed)
-				return
-			}
-			defer file.Close()
-
-			// Get the file info to obtain the modification time
-			fileInfo, err := file.Stat()
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
-
-			// Set the appropriate response headers and serve the file content
-			w.Header().Set("Content-Type", "application/octet-stream")
-			http.ServeContent(w, r, fileName, fileInfo.ModTime(), file)
-			return
-		}
+func forwardPayloadRequest(moduleName string, w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
-	if strings.HasPrefix(VER, "wiimmfi") {
-		//region := string("PAL") //
-		if region != "" {
-			fileName := fmt.Sprintf("./wiimmfipayload/wiimmfipatches_%s.bin", region)
-			file, err := os.Open(fileName)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("No matching file for region: %s", region), http.StatusExpectationFailed)
-				return
-			}
-			defer file.Close()
+	r.URL.Scheme = "http"
+	r.URL.Host = payloadServerAddress
+	r.RequestURI = ""
+	r.Host = payloadServerAddress
 
-			// Get the file info to obtain the modification time
-			fileInfo, err := file.Stat()
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
-
-			// Set the appropriate response headers and serve the file content
-			w.Header().Set("Content-Type", "application/octet-stream")
-			http.ServeContent(w, r, fileName, fileInfo.ModTime(), file)
-			return
-		}
-	}
-	//http.ServeFile(w, r, Patches)
-	replyHTTPError(w, 404, "404, sad to see you here")
-	return
-}
-
-func handlePayloadDownload(w http.ResponseWriter, r *http.Request, Payload string) {
-
-	var Patches string
-	Patches = "./wiimmfipayload"
-	if strings.HasPrefix(Payload, "/ca") {
-		Patches += "/cmar.cer"
-	}
-	if strings.HasPrefix(Payload, "/pe") {
-		Patches += "/NewWFC-Le-Code-USv5.bin"
-	}
-	if strings.HasPrefix(Payload, "/pp") {
-		Patches += "/NewWFC-Le-Code-USv5PP.bin"
-	}
-
-	if strings.HasPrefix(Payload, "/pj") {
-		Patches += "/NewWFC-Le-Code-USv5PJ.bin"
-	}
-
-	if strings.HasPrefix(Payload, "/pk") {
-		Patches += "/NewWFC-Le-Code-USv5PK.bin"
-	}
-
-	if strings.HasPrefix(Payload, "/ce") {
-		Patches += "/CTGP_US.bin"
-	}
-
-	if strings.HasPrefix(Payload, "/cp") {
-		Patches += "/CTGP_EU.bin"
-	}
-
-	if strings.HasPrefix(Payload, "/gg") {
-		replyHTTPError(w, 403, "Oops, payload moment")
+	resp, err := client.Do(r)
+	if err != nil {
+		logging.Error(moduleName, "Error forwarding payload request:", err)
+		replyHTTPError(w, http.StatusBadGateway, "502 Bad Gateway")
 		return
 	}
+	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	http.ServeFile(w, r, Patches)
-	return
+	// Copy the response headers and status code
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	// Copy the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logging.Error(moduleName, "Error reading response body:", err)
+		replyHTTPError(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+	w.Write(body)
 }

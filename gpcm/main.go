@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"wwfc/acommon"
 	"wwfc/common"
 	"wwfc/database"
 	"wwfc/logging"
 	"wwfc/qr2"
 
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/linkdata/deadlock"
 	"github.com/logrusorgru/aurora/v3"
-	"github.com/sasha-s/go-deadlock"
 )
 
 var ServerName = "gpcm"
@@ -40,6 +41,7 @@ type GameSpySession struct {
 	DeviceId          uint32
 	HostPlatform      string
 	UnitCode          byte
+	csnum             string
 
 	StatusSet      bool
 	Status         string
@@ -138,6 +140,9 @@ func CloseConnection(index uint64) {
 		session.LoggedIn = false
 		delete(sessions, session.User.ProfileId)
 	}
+	acommon.SetGetStateGPCMFunc(GetStateGPCM)
+	acommon.SetKickPlayerFunc(KickPlayer)
+	acommon.SetKickPlayerDelFunc(KickPlayerDel)
 }
 
 func NewConnection(index uint64, address string) {
@@ -236,6 +241,7 @@ func HandlePacket(index uint64, data []byte) {
 	})
 	commands = session.handleCommand("login", commands, session.login)
 	commands = session.handleCommand("wwfc_exlogin", commands, session.exLogin)
+	commands = session.handleCommand("wl:exlogin", commands, session.exLogin)
 	commands = session.ignoreCommand("logout", commands)
 
 	if len(commands) != 0 && !session.LoggedIn {
@@ -245,6 +251,7 @@ func HandlePacket(index uint64, data []byte) {
 	}
 
 	commands = session.handleCommand("wwfc_report", commands, session.handleWWFCReport)
+	commands = session.handleCommand("wl:report", commands, session.handleWWFCReport)
 	commands = session.handleCommand("updatepro", commands, session.updateProfile)
 	commands = session.handleCommand("status", commands, session.setStatus)
 	commands = session.handleCommand("addbuddy", commands, session.addFriend)
@@ -261,7 +268,7 @@ func HandlePacket(index uint64, data []byte) {
 		data := []byte{}
 		logged := false
 		for c := 0; c < len(session.WriteBuffer); c++ {
-			if session.WriteBuffer[c] > 0xff || session.WriteBuffer[c] == 0x00 {
+			if session.WriteBuffer[c] == 0x00 {
 				if !logged {
 					logging.Warn(session.ModuleName, "Non-char or null byte in response packet:", session.WriteBuffer)
 					logged = true
@@ -343,4 +350,72 @@ func loadState() error {
 	}
 
 	return nil
+}
+
+// Get a copy of the list of servers
+func GetSessionServers() []map[string]string {
+	var result []map[string]string
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	for _, session := range sessions {
+		sessionMap := map[string]string{
+			"ConnIndex":           fmt.Sprintf("%d", session.ConnIndex),
+			"RemoteAddr":          session.RemoteAddr,
+			"ModuleName":          session.ModuleName,
+			"LoggedIn":            fmt.Sprintf("%t", session.LoggedIn),
+			"DeviceAuthenticated": fmt.Sprintf("%t", session.DeviceAuthenticated),
+			"Challenge":           session.Challenge,
+			"AuthToken":           session.AuthToken,
+			"LoginTicket":         session.LoginTicket,
+			"SessionKey":          fmt.Sprintf("%d", session.SessionKey),
+			"LoginInfoSet":        fmt.Sprintf("%t", session.LoginInfoSet),
+			"GameName":            session.GameName,
+			"GameCode":            session.GameCode,
+			"Region":              fmt.Sprintf("%d", session.Region),
+			"Language":            fmt.Sprintf("%d", session.Language),
+			"InGameName":          session.InGameName,
+			"ConsoleFriendCode":   fmt.Sprintf("%d", session.ConsoleFriendCode),
+			"DeviceId":            fmt.Sprintf("%d", session.DeviceId),
+			"HostPlatform":        session.HostPlatform,
+			"UnitCode":            fmt.Sprintf("%d", session.UnitCode),
+			"StatusSet":           fmt.Sprintf("%t", session.StatusSet),
+			"Status":              session.Status,
+			"LocString":           session.LocString,
+			"QR2IP":               fmt.Sprintf("%d", session.QR2IP),
+			"ReservationPID":      fmt.Sprintf("%d", session.ReservationPID),
+			"NeedsExploit":        fmt.Sprintf("%t", session.NeedsExploit),
+			"WriteBuffer":         session.WriteBuffer,
+			// Add other fields if necessary
+		}
+
+		result = append(result, sessionMap)
+	}
+
+	return result
+}
+
+// Get a copy of the list of servers
+func GetStateGPCM(dwc_pid uint32) (string, bool) {
+	// Assume `sessions` is a map or slice in gpcm
+	mutex.Lock()
+	defer mutex.Unlock()
+	for _, session := range sessions {
+		if session.User.ProfileId == dwc_pid {
+			// Ensure you're returning a string value
+			return session.Status, true
+		}
+	}
+	// Return an empty string or a default string value when the profileId doesn't match
+	return "", false
+}
+
+func PayloadUser(profileID uint32) (ok bool) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	if session, exists := sessions[profileID]; exists {
+		session.NeedsExploit = true
+		return true
+	}
+	return false
 }

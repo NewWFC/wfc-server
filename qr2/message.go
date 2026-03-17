@@ -36,6 +36,7 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 	var receiver *Session
 
 	useSearchID := destSearchID < (1 << 24)
+	mutex.Lock()
 	if useSearchID {
 		receiver = sessionBySearchID[destSearchID]
 	} else {
@@ -44,22 +45,27 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 	}
 
 	if receiver == nil || !receiver.Authenticated {
+		mutex.Unlock()
 		logging.Error(moduleName, "Destination", aurora.Cyan(destSearchID), "does not exist")
 		return
 	}
 
 	if destPid, ok := receiver.Data["dwc_pid"]; !ok || destPid == "" {
+		mutex.Unlock()
 		logging.Error(moduleName, "Destination", aurora.Cyan(destSearchID), "has no profile ID")
 		return
 	}
+	mutex.Unlock()
 
-	if receiver.login == nil || !receiver.login.DeviceAuthenticated {
+	login := receiver.login
+	if login == nil || !login.DeviceAuthenticated {
 		logging.Error(moduleName, "Destination", aurora.Cyan(destSearchID), "is not device authenticated")
+		return
 	}
 
 	// Decode and validate the message
 	isNatnegPacket := false
-	if bytes.Equal(message[:2], []byte{0xfd, 0xfc}) {
+	if len(message) >= 2 && bytes.Equal(message[:2], []byte{0xfd, 0xfc}) {
 		// Sending natneg cookie
 		isNatnegPacket = true
 		if len(message) != 0xA {
@@ -69,7 +75,7 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 
 		natnegID := binary.LittleEndian.Uint32(message[0x6:0xA])
 		moduleName = "QR2/MSG:s" + strconv.FormatUint(uint64(natnegID), 10)
-	} else if bytes.Equal(message[:4], []byte{0xbb, 0x49, 0xcc, 0x4d}) || bytes.Equal(message[:4], []byte("SBCM")) {
+	} else if len(message) >= 4 && (bytes.Equal(message[:4], []byte{0xbb, 0x49, 0xcc, 0x4d}) || bytes.Equal(message[:4], []byte("SBCM"))) {
 		// DWC match command
 		if len(message) < 0x14 || len(message) > 0x94 {
 			logging.Error(moduleName, "Received invalid length match command packet")
@@ -93,7 +99,9 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 		qr2IP := binary.BigEndian.Uint32(message[0x0C:0x10])
 		qr2Port := binary.LittleEndian.Uint16(message[0x0A:0x0C])
 
+		mutex.Lock()
 		sender = sessions[(uint64(qr2Port)<<32)|uint64(qr2IP)]
+		mutex.Unlock()
 		if sender == nil || !sender.Authenticated {
 			logging.Error(moduleName, "Session does not exist with QR2 IP and port")
 			return
@@ -104,7 +112,8 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 			return
 		}
 
-		if sender.login == nil || !sender.login.DeviceAuthenticated {
+		login := sender.login
+		if login == nil || !login.DeviceAuthenticated {
 			logging.Error(moduleName, "Sender is not device authenticated")
 			return
 		}
@@ -219,6 +228,7 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 		}
 	} else {
 		logging.Error(moduleName, "Invalid message:", aurora.Cyan(printHex(message)))
+		return
 	}
 
 	destSessionID, packetCount, destAddr := processClientMessage(moduleName, sender, receiver, message, isNatnegPacket, matchData)
@@ -266,12 +276,40 @@ func SendClientMessage(senderIP string, destSearchID uint64, message []byte) {
 				break
 			}
 
-			logging.Error(moduleName, "Timed out waiting for ack")
-			// Kick the player
-			if login := receiver.login; login != nil {
-				gpErrorCallback(login.ProfileID, "network_error")
-				receiver.login = nil
+			if sender == nil || receiver == nil { //if either is nil, just return
+				logging.Error(moduleName, "Timed out waiting for ack (sender or receiver is nil)")
+				// Kick the player
+				if login := receiver.login; login != nil {
+					gpErrorCallback(login.ProfileID, "network_error")
+					receiver.login = nil
+				}
+				return
+			} else {
+
+				if sender != nil && receiver != nil { //hopefully hopefully xdxd
+					if sender.Data["gamename"] != "" && sender.Data["gamename"] == "mariokartds" && ((receiver.Data["statechanged"] != "" && receiver.Data["statechanged"] == "1") || matchData.ResvOK != nil || matchData.ResvDeny != nil) { //server crash fix hopefully
+						logging.Notice(moduleName, "Timed out waiting for ack but not kicking the receiver: ", receiver.Data["+dname"])
+					} else {
+						logging.Error(moduleName, "Timed out waiting for ack")
+						// Kick the player
+						if login := receiver.login; login != nil {
+							gpErrorCallback(login.ProfileID, "network_error")
+							receiver.login = nil
+						}
+					}
+				} else {
+					if login := receiver.login; login != nil {
+						gpErrorCallback(login.ProfileID, "network_error")
+						receiver.login = nil
+					}
+				}
 			}
+			// logging.Error(moduleName, "Timed out waiting for ack")
+			// // Kick the player
+			// if login := receiver.login; login != nil {
+			// 	gpErrorCallback(login.ProfileID, "network_error")
+			// 	receiver.login = nil
+			// }
 			return
 
 		default:
